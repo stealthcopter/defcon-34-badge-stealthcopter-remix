@@ -19,7 +19,7 @@ it over USB.
 
 ## Installing
 
-**Minimum path:** install the Android app, plug the badge into your phone, and let
+**Minimum path:** install the [Android app](https://github.com/stealthcopter/defcon-34-badge-stealthcopter-remix/releases/download/latest/app-release.apk), plug the badge into your phone, and let
 the app download the pre-compiled firmware bundle and flash it for you. That's it,
 you don't need any of the source in this repo.
 
