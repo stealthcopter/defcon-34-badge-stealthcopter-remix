@@ -149,8 +149,11 @@ class MainActivity : AppCompatActivity() {
         val advanced: Boolean,
     )
 
-    /** The firmware the user has selected in the Firmware tab. */
-    private var selectedFirmware: Firmware = FIRMWARES.first()
+    /** The firmware the user has selected in the Firmware tab. Defaults to the
+     *  Remix build because that's what unlocks the app's own features — users
+     *  installing via this app almost always want the Remix, not the stock image. */
+    private var selectedFirmware: Firmware =
+        FIRMWARES.firstOrNull { it.dir == "remix" } ?: FIRMWARES.first()
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var usbManager: UsbManager
@@ -286,6 +289,7 @@ class MainActivity : AppCompatActivity() {
         // LED preset controls (Remix-only 'led …' command family). Each is gated:
         // on stock firmware the tap explains that the Remix build is required.
         binding.btnRainbow.setOnClickListener { ledAction { sendLedCommand("led rainbow") } }
+        binding.btnDisco.setOnClickListener { ledAction { sendLedCommand("led disco") } }
         binding.btnRevert.setOnClickListener { ledAction { sendLedCommand("led revert") } }
         binding.btnSolid.setOnClickListener { ledAction { onSolidClicked() } }
 
@@ -314,6 +318,22 @@ class MainActivity : AppCompatActivity() {
         )
         for ((view, hex) in swatches) {
             view.setOnClickListener { ledAction { sendSolid(hex) } }
+        }
+
+        // Effect radio (Flash/Breathe/Rotate): changing the selection instantly
+        // re-applies the current color with the new effect. Uses the hex field if
+        // valid, otherwise the hint value (ff8000). Attached AFTER inflation so
+        // the initial checked="true" on Flash in the layout doesn't fire it.
+        binding.effectGroup.setOnCheckedChangeListener { _, _ ->
+            ledAction {
+                val raw = binding.solidHex.text.toString().trim()
+                    .removePrefix("#")
+                    .ifEmpty { binding.solidHex.hint?.toString().orEmpty() }
+                    .removePrefix("#")
+                if (raw.matches(Regex("[0-9a-fA-F]{6}"))) {
+                    sendSolid(raw.lowercase())
+                }
+            }
         }
 
         // Prime swatches to the initial slider values.
@@ -574,8 +594,10 @@ class MainActivity : AppCompatActivity() {
                 updateConnectUi(true)
                 log("✓ Connected and configured. Ready to upload.")
                 // Auto-detect whether this firmware has the Remix features so the
-                // LED controls + DEF CON-logo slot reflect reality.
-                checkLedCapability(verbose = false)
+                // LED controls + DEF CON-logo slot reflect reality. Retry a few
+                // times because the badge takes ~10s to fully boot and the first
+                // probe often fires before the console REPL is listening.
+                checkLedCapabilityWithRetries()
             } else {
                 s.close()
                 setStatus("disconnected (open failed)")
@@ -790,19 +812,22 @@ class MainActivity : AppCompatActivity() {
      * @param verbose when true every RX line is logged; when false (auto-probe
      *   after connect) only a one-line summary is logged.
      */
-    private fun checkLedCapability(verbose: Boolean) {
+    private fun checkLedCapability(verbose: Boolean, onDone: ((Boolean?) -> Unit)? = null) {
         val s = serial
         if (s == null || !s.isOpen) {
             if (verbose) log("Not connected — press Connect first")
+            onDone?.invoke(null)
             return
         }
         if (!busy.compareAndSet(false, true)) {
             if (verbose) log("Busy — another transfer is in progress")
+            onDone?.invoke(null)
             return
         }
         worker.execute {
             val wasVerbose = s.verboseRx
             s.verboseRx = verbose
+            var remixVerdict: Boolean? = null
             try {
                 log(if (verbose) "── Probe: diagnosing console + Remix support ──"
                     else "── Auto-checking firmware features ──")
@@ -835,11 +860,13 @@ class MainActivity : AppCompatActivity() {
                         applyLedSupport(null,
                             "LED support: unknown — console isn't returning output. Reconnect and try again.")
                         log("   ⇒ Verdict: console link not returning output. Feature replies can't be read.")
+                        remixVerdict = null
                     }
                     ledResp == "OK" -> {
                         applyLedSupport(true,
                             "✓ Stealthcopter Remix firmware — LED control + DEF CON-logo slot enabled.")
                         log("   ⇒ Verdict: 'led revert' returned OK — this is the Remix firmware. Bonus features enabled.")
+                        remixVerdict = true
                     }
                     else -> {
                         applyLedSupport(false,
@@ -847,11 +874,35 @@ class MainActivity : AppCompatActivity() {
                             "from the Firmware tab to enable the LEDs + second logo slot.")
                         log("   ⇒ Verdict: 'led revert' -> ${ledResp ?: "no reply"} — stock firmware. " +
                             "Flash the Remix build to enable the bonus features.")
+                        remixVerdict = false
                     }
                 }
             } finally {
                 s.verboseRx = wasVerbose
                 busy.set(false)
+                onDone?.invoke(remixVerdict)
+            }
+        }
+    }
+
+    /** Auto-probe wrapper: retries a negative verdict up to [maxAttempts] times
+     *  with [delayMs] between tries. The badge takes ~10s to fully boot and the
+     *  first probe often fires before the console REPL is listening, so a single
+     *  probe can spuriously report "stock firmware" on a Remix badge that just
+     *  came up. Stops as soon as Remix is detected. */
+    private fun checkLedCapabilityWithRetries(
+        maxAttempts: Int = 3,
+        delayMs: Long = 3000L,
+        attempt: Int = 1,
+    ) {
+        checkLedCapability(verbose = false) { verdict ->
+            // Retry only on a *negative* Remix verdict. Verdict == null means the
+            // console link didn't return anything at all — also worth another try.
+            if (verdict != true && attempt < maxAttempts) {
+                log("   (retrying Remix probe in ${delayMs / 1000}s — attempt ${attempt + 1}/$maxAttempts)")
+                ui.postDelayed({
+                    checkLedCapabilityWithRetries(maxAttempts, delayMs, attempt + 1)
+                }, delayMs)
             }
         }
     }
@@ -1304,6 +1355,10 @@ class MainActivity : AppCompatActivity() {
                     "device (like a tiny flash drive). If it doesn't, unplug and repeat — " +
                     "the button must stay held from before the reset all the way through the " +
                     "USB plug-in.\n\n" +
+                    "Still not showing up? Try the cold-boot fallback: pop a battery out, hold " +
+                    "any badge button, put the battery back in WHILE STILL HOLDING the button, " +
+                    "then plug in the USB cable (button still held). This forces the ROM " +
+                    "bootloader before any firmware runs.\n\n" +
                     "You can't brick the badge this way — the ROM update mode always works.",
                 imageUrl = IMG_UPDATE_MODE,
                 action = WizAction.NONE,

@@ -6,6 +6,7 @@
 //
 // Subcommands:
 //   led rainbow                 → full hue wheel, moving
+//   led disco                   → multi-band rainbow, fast rotation (party mode)
 //   led hue <base> <bound>      → arbitrary hue-range slice (both 0-255)
 //   led solid   <RRGGBB>        → single hue, ~0.6s cycle brightness (looks flashy)
 //   led flash   <RRGGBB>        → alias for `solid` (same phenotype)
@@ -147,6 +148,22 @@ pub fn rainbow_phenotype() -> Haploid {
     }
 }
 
+/// `led disco` — full hue wheel with rapid spatial period AND fast rotation.
+/// Multiple color bands spinning aggressively for a "club/party" look.
+fn disco_phenotype() -> Haploid {
+    Haploid {
+        cd_period: 4,      // 4 hue peaks around the ring for chunky bands
+        cd_rate: 220,      // fast rotation
+        cd_dir: 200,       // clockwise
+        sat: 255,          // punchy saturation
+        hue_ratedir: 10,   // fast hue cycling too
+        hue_base: 0,
+        hue_bound: 255,    // full spectrum
+        chaser: 255,
+        nonlin: 128,
+    }
+}
+
 /// `led solid` — cd_period=0 + cd_rate=0 gives tau=60 (~0.6 s brightness cycle).
 /// Called "flash" by the user; that's what it looks like on the ring.
 fn flash_phenotype(hue: u8, sat: u8) -> Haploid {
@@ -163,11 +180,20 @@ fn flash_phenotype(hue: u8, sat: u8) -> Haploid {
     }
 }
 
-/// `led breathe` — cd_period=0 + cd_rate=255 gives tau=700 (~7 s slow pulse).
+/// `led breathe` — single hue, slow fade in/out.
+///
+/// With `cd_period = 0` every LED updates in lockstep and the whole ring
+/// changes brightness by an integer step each frame, which reads as visible
+/// stutter at low frame rates. Setting `cd_period = 1` gives each LED a small
+/// phase offset around the ring (2π * i / count) so at any moment adjacent
+/// LEDs are on slightly different brightness values — the eye integrates that
+/// spatial gradient into a smoother breath. `cd_rate = 128` picks the middle
+/// of the tau map (tau ≈ 380 → ~3.8 s period), which pairs well with the
+/// phase-spread. Faster than the old 7 s but noticeably smoother.
 fn breathe_phenotype(hue: u8, sat: u8) -> Haploid {
     Haploid {
-        cd_period: 0,
-        cd_rate: 255,
+        cd_period: 1,      // small spatial period = phase dither across ring
+        cd_rate: 128,      // mid-range temporal rate
         cd_dir: 128,
         sat,
         hue_ratedir: 0,
@@ -247,7 +273,7 @@ impl<'a> ShellCmdApi<'a> for Led {
             None => {
                 write!(
                     ret,
-                    "ERR usage: led {{rainbow|hue <base> <bound>|solid <RRGGBB>|flash <RRGGBB>|breathe <RRGGBB>|rotate <RRGGBB>|force <32-hex>|revert}}"
+                    "ERR usage: led {{rainbow|disco|hue <base> <bound>|solid <RRGGBB>|flash <RRGGBB>|breathe <RRGGBB>|rotate <RRGGBB>|force <32-hex>|revert}}"
                 )
                 .ok();
                 return Ok(Some(ret));
@@ -258,6 +284,7 @@ impl<'a> ShellCmdApi<'a> for Led {
 
         let result: Result<(), String> = match sub {
             "rainbow" => self.apply_and_persist(rainbow_phenotype(), &xns),
+            "disco" => self.apply_and_persist(disco_phenotype(), &xns),
             "solid" | "flash" => match parse_color_effect(&mut parts, &mut ret, flash_phenotype) {
                 Some(p) => self.apply_and_persist(p, &xns),
                 None => return Ok(Some(ret)),

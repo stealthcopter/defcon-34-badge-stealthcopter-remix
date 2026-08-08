@@ -20,8 +20,8 @@ android {
         applicationId = "com.stealthcopter.dc34flasher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 14
-        versionName = "2.1.0"
+        versionCode = 15
+        versionName = "0.0.2"
     }
 
     buildFeatures {

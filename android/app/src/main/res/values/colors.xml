@@ -4,4 +4,8 @@
     <color name="badge_green">#FF00E676</color>
     <color name="log_bg">#FF10141A</color>
     <color name="log_text">#FFCFE8D4</color>
+    <!-- Backgrounds for the forced-dark theme so nothing renders on system-default
+         light surface (was causing dark-on-dark on light-mode phones). -->
+    <color name="app_bg">#FF10141A</color>
+    <color name="log_text_dim">#FF708090</color>
 </resources>

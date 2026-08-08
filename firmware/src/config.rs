@@ -245,6 +245,11 @@ impl GlobalConfig {
         {
             let _ = key.write(&[if self.display_always_on { 1 } else { 0 }]);
         }
+        // Force the next update_power_state() to re-send the config even if the
+        // vault mode hasn't changed — otherwise toggling OFF from Idle leaves
+        // the power manager in its previous 'disabled' state and the screen
+        // still never times out.
+        self.previous_mode = None;
         self.display_always_on
     }
 

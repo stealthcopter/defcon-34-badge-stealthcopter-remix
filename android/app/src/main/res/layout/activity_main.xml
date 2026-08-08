@@ -413,13 +413,29 @@
                 android:textStyle="bold"
                 android:textSize="13sp" />
 
-            <Button
-                android:id="@+id/btnRainbow"
-                style="?attr/materialButtonOutlinedStyle"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="Rainbow (full spectrum)" />
+                android:orientation="horizontal"
+                android:layout_marginTop="2dp">
+
+                <Button
+                    android:id="@+id/btnRainbow"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:text="Rainbow" />
+
+                <Button
+                    android:id="@+id/btnDisco"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Disco" />
+            </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"

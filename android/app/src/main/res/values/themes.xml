@@ -1,7 +1,20 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.DC34Flasher" parent="Theme.Material3.DayNight.NoActionBar">
+    <!-- Force a dark theme in both light and dark system modes.
+         The whole UI (badge-green highlights on near-black backgrounds, the
+         monospace console log) is designed for a dark surface. On light-mode
+         phones the Material3 DayNight parent used to swap the surface to white,
+         but text colors stayed dark-on-dark and things vanished. Force-dark
+         fixes that without needing per-mode color variants. -->
+    <style name="Theme.DC34Flasher" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/badge_green</item>
         <item name="colorOnPrimary">@color/black</item>
+        <item name="colorSurface">@color/app_bg</item>
+        <item name="colorOnSurface">@color/log_text</item>
+        <!-- Only the framework attr — Material3 has no un-namespaced colorBackground. -->
+        <item name="android:colorBackground">@color/app_bg</item>
+        <item name="android:windowBackground">@color/app_bg</item>
+        <item name="android:textColorPrimary">@color/log_text</item>
+        <item name="android:textColorSecondary">@color/log_text_dim</item>
         <item name="android:statusBarColor">@color/black</item>
     </style>
 </resources>

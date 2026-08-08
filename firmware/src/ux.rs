@@ -816,8 +816,10 @@ impl VaultUi {
                         self.gfx.draw_textview(&mut tv).ok();
                     }
                     AttachState::FirstMate => {
-                        write!(tv, "Attach: {:?}", badge_type).ok();
-                        self.gfx.draw_textview(&mut tv).ok();
+                        // FirstMate overlay ("Attach: Human"/etc) intentionally suppressed
+                        // for self-loaded firmware — it's a factory diagnostic hint and
+                        // showed up unexpectedly on some users' badges.
+                        let _ = badge_type;
                     }
                     _ => {
                         // do nothing
