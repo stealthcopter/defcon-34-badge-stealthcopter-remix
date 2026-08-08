@@ -1,4 +1,4 @@
-# DC34 badge — custom firmware + companion Android app
+# DC34 badge - custom firmware + companion Android app
 
 <p align="center">
   <img src="stealthcopter-remix.gif" alt="Stealthcopter remix" width="320">
@@ -7,21 +7,28 @@
 Personal fork of the Defcon 34 badge firmware, plus a matching Android app to drive
 it over USB.
 
-- `firmware/` — the badge firmware (vendored monorepo). See `firmware/README.md` for
+- `firmware/` - the badge firmware (vendored monorepo). See `firmware/README.md` for
   build instructions.
-- `android/` — the companion Android app. Talks to the badge over USB-serial per
-  `firmware/ANDROID_SPEC.md`.
+- `android/` - the companion Android app. Talks to the badge over USB-serial.
 
-## Upstream
+## Installing
 
-Firmware is derived from these repos (all vendored into `firmware/` with their
-`.git` directories removed — no submodules):
+**Minimum path:** install the Android app, plug the badge into your phone, and let
+the app download the pre-compiled firmware bundle and flash it for you. That's it,
+you don't need any of the source in this repo.
 
-- [bunnie/dc34-vault](https://github.com/bunnie/dc34-vault) — the badge application
-- [bunnie/dc34-console](https://github.com/bunnie/dc34-console) — on-badge REPL, LED + power servers
-- [bunnie/dc34-api](https://github.com/bunnie/dc34-api) — shared API types
-- [betrusted-io/xous-core](https://github.com/betrusted-io/xous-core) — Xous OS,
-  services, HAL, `xtask` build system
+Everything else in this repo is optional and only relevant if you want to build
+things yourself:
+
+- Build the firmware from source, see `firmware/README.md`. Output is three
+  `.uf2` files you can copy onto the badge in mass-storage mode manually if you'd
+  rather not use the app.
+- Build the Android app from source, see `android/README.md` (if present) or the
+  project files under `android/`.
+
+Everything's a bit rough around the edges, it was thrown together at
+hackathon-speed, but the moving parts should be self-explanatory. If something
+doesn't work, the source is right here to poke at.
 
 ## What this adds on top of upstream
 
@@ -31,8 +38,8 @@ Firmware is derived from these repos (all vendored into `firmware/` with their
   `led hue <base> <bound>` / `led force <32-hex>` / `led revert`. Also fixes an
   upstream bug where `LedManagerOp::Force` was silently discarded by the BIO
   coprocessor (missing `0x40000000` codon bit).
-- **Always-on display** — disables the idle screen-off timeout and fade.
-- **DEV MODE overlay hidden** — the on-screen text is suppressed for self-loaded
+- **Always-on display**, disables the idle screen-off timeout and fade.
+- **DEV MODE overlay hidden**, the on-screen text is suppressed for self-loaded
   firmware. (The developer-mode state itself is a one-way hardware counter and
   cannot be undone.)
 - **Default LED pattern set to rainbow** via a `Diploid::phenotype()` override, so
@@ -43,11 +50,22 @@ Firmware is derived from these repos (all vendored into `firmware/` with their
 - **Log spam quieted**: keyboard-input-overflow lines demoted from `info!` to
   `debug!` so fast image uploads don't drown the log.
 
+## Upstream
+
+Firmware is derived from these repos (all vendored into `firmware/` with their
+`.git` directories removed, no submodules):
+
+- [bunnie/dc34-vault](https://github.com/bunnie/dc34-vault), the badge application
+- [bunnie/dc34-console](https://github.com/bunnie/dc34-console), on-badge REPL, LED + power servers
+- [bunnie/dc34-api](https://github.com/bunnie/dc34-api), shared API types
+- [betrusted-io/xous-core](https://github.com/betrusted-io/xous-core), Xous OS,
+  services, HAL, `xtask` build system
+
 ## ⚠️ Note on DEV MODE
 
 Flashing any self-built firmware (including this one) trips the badge's hardware
-`DEVELOPER_MODE` one-way counter. That counter is **physically monotonic** — it
-can be incremented but never reset — so re-flashing the *original* signed firmware
+`DEVELOPER_MODE` one-way counter. That counter is **physically monotonic**, it
+can be incremented but never reset, so re-flashing the *original* signed firmware
 from bunnie's release will still render a **"DEV MODE"** overlay on the idle
 screen. This is a silicon-level tamper flag; there is no software or button-combo
 that clears it.
@@ -62,6 +80,6 @@ of `is_developer()` still works normally.
 ## Disclaimer
 
 I take no responsibility if flashing this bricks your badge. (I don't think it
-would — the badge has a mass-storage bootloader you can re-enter by holding a
-button at plug-in, and re-flashing the upstream firmware should always work — but
+would, the badge has a mass-storage bootloader you can re-enter by holding a
+button at plug-in, and re-flashing the upstream firmware should always work, but
 you're on your own if something goes sideways.)
