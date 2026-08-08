@@ -418,6 +418,57 @@ impl GlobalConfig {
         }
     }
 
+    /// If a persisted LED preset (`DC34_LED_PRESET`, 16 bytes = padded Haploid)
+    /// exists in the PDDB, ship it to the LED server as `LedManagerOp::Force`.
+    /// No-op if the key is missing or the wrong length. Called at boot after
+    /// SetGene so the Force overrides the default expression.
+    pub fn restore_led_preset(&self) {
+        let pddb = pddb::Pddb::new();
+        let mut buf = [0u8; 16];
+        let mut key = match pddb.get(
+            DC34_DICT,
+            DC34_LED_PRESET,
+            None,
+            true,
+            false,
+            None,
+            None::<fn()>,
+        ) {
+            Ok(k) => k,
+            Err(_) => return,
+        };
+        let n = match key.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => return,
+        };
+        if n != 16 {
+            return;
+        }
+        let words = [
+            u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+            u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+            u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]),
+        ];
+        let phenotype = match Haploid::deserialize_u32(&words) {
+            Some(p) => p,
+            None => return,
+        };
+        log::info!("restoring LED preset: {:?}", phenotype);
+        // Must be a BLOCKING scalar — matches send_force in the console.
+        xous::send_message(
+            self.led_server,
+            xous::Message::new_blocking_scalar(
+                LedManagerOp::Force.to_usize().unwrap(),
+                words[0] as usize,
+                words[1] as usize,
+                words[2] as usize,
+                words[3] as usize,
+            ),
+        )
+        .ok();
+    }
+
     pub fn nonce_data(&mut self) -> Vec<u8> {
         self.generate_my_nonce();
         [DC34_HEADER.as_slice(), self.nonce_mine.unwrap().as_slice()].concat()

@@ -11,6 +11,12 @@ it over USB.
   build instructions.
 - `android/` - the companion Android app. Talks to the badge over USB-serial.
 
+<p align="center">
+  <img src="screenshot-1.png" alt="App connected: image upload page" width="280">
+  &nbsp;
+  <img src="screenshot-2.png" alt="App LED controls" width="280">
+</p>
+
 ## Installing
 
 **Minimum path:** install the Android app, plug the badge into your phone, and let
@@ -61,21 +67,29 @@ Firmware is derived from these repos (all vendored into `firmware/` with their
 - [betrusted-io/xous-core](https://github.com/betrusted-io/xous-core), Xous OS,
   services, HAL, `xtask` build system
 
-## ⚠️ Note on DEV MODE
+## Known issues
 
+**Phone on-screen keyboard doesn't show up while the badge is connected.** The
+badge does something funky with the USB keyboard descriptor: while it's plugged
+into your phone, Android sometimes decides "there's already a physical keyboard
+here, don't show the soft one" and hides the on-screen keyboard for every text
+field system-wide. Not this app's fault, it's the badge's HID advertisement.
+Workaround: unplug the badge to type, or in Android Settings → System →
+Languages & input → Physical keyboard, turn on "Show on-screen keyboard" while a
+physical keyboard is connected.
+
+**"DEV MODE" text on the idle screen after re-flashing original firmware.**
 Flashing any self-built firmware (including this one) trips the badge's hardware
 `DEVELOPER_MODE` one-way counter. That counter is **physically monotonic**, it
 can be incremented but never reset, so re-flashing the *original* signed firmware
 from bunnie's release will still render a **"DEV MODE"** overlay on the idle
 screen. This is a silicon-level tamper flag; there is no software or button-combo
-that clears it.
-
-If the overlay bothers you on stock firmware, it's a trivial ~15-line source diff
-to hide the text (same edit this fork already ships): remove the
-`if mode_at_entry == VaultMode::IdleDevMode { … "DEV MODE" … }` block from
-`src/ux.rs` in [bunnie/dc34-vault](https://github.com/bunnie/dc34-vault), rebuild,
-flash. Nothing else needs to change; signature validation and everything downstream
-of `is_developer()` still works normally.
+that clears it. If the overlay bothers you on stock firmware, it's a trivial
+~15-line source diff to hide the text (same edit this fork already ships): remove
+the `if mode_at_entry == VaultMode::IdleDevMode { … "DEV MODE" … }` block from
+`src/ux.rs` in [bunnie/dc34-vault](https://github.com/bunnie/dc34-vault),
+rebuild, flash. Nothing else needs to change; signature validation and everything
+downstream of `is_developer()` still works normally.
 
 ## Disclaimer
 

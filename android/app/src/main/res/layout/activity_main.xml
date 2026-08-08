@@ -1,0 +1,588 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/log_bg">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="@color/black"
+        app:logo="@drawable/ic_logo"
+        app:title="DC34 Flasher"
+        app:titleTextColor="@color/badge_green" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: disconnected"
+            android:textColor="@color/badge_green"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:paddingBottom="4dp" />
+
+        <!-- Single connect/disconnect toggle (never need both at once) -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnConnect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:icon="@drawable/ic_usb"
+            app:iconGravity="textStart"
+            android:text="Connect badge" />
+    </LinearLayout>
+
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tabs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:tabTextColor="@color/log_text"
+        app:tabSelectedTextColor="@color/badge_green"
+        app:tabIndicatorColor="@color/badge_green">
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Logo" />
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="LEDs" />
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Firmware" />
+    </com.google.android.material.tabs.TabLayout>
+
+    <!-- ===== Logo panel ===== -->
+    <LinearLayout
+        android:id="@+id/panelLogo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Upload target slot:"
+            android:textColor="@color/log_text"
+            android:fontFamily="monospace"
+            android:textSize="12sp" />
+
+        <RadioGroup
+            android:id="@+id/slotChoice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="2dp">
+
+            <RadioButton
+                android:id="@+id/slotUser"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="true"
+                android:textColor="@color/log_text"
+                android:textSize="12sp"
+                android:text="User image" />
+
+            <RadioButton
+                android:id="@+id/slotDefcon"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/log_text"
+                android:textSize="12sp"
+                android:text="DEF CON logo ★" />
+        </RadioGroup>
+
+        <TextView
+            android:id="@+id/slotHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="User image alternates with the DEF CON logo every 3 s on the idle screen."
+            android:textColor="#FF708090"
+            android:fontFamily="monospace"
+            android:textSize="10sp"
+            android:layout_marginBottom="6dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageView
+                android:id="@+id/preview"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:layout_marginEnd="8dp"
+                android:background="@color/white"
+                android:scaleType="fitCenter"
+                android:clickable="true"
+                android:focusable="true"
+                android:contentDescription="tap to pick an image" />
+
+            <TextView
+                android:id="@+id/imageInfo"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_vertical"
+                android:text="Tap the box to pick an image"
+                android:textColor="@color/log_text"
+                android:fontFamily="monospace"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- Prominent upload button: greyed until an image is chosen, then it
+             lights up so the user knows to press it. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnUpload"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:enabled="false"
+            android:text="Upload to badge"
+            android:textStyle="bold"
+            app:icon="@drawable/ic_upload"
+            app:iconGravity="textStart" />
+    </LinearLayout>
+
+    <!-- ===== LEDs panel ===== -->
+    <LinearLayout
+        android:id="@+id/panelLeds"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/ledBanner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="LED support: connect the badge to check…"
+            android:textColor="#FF708090"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:padding="6dp"
+            android:layout_marginBottom="4dp"
+            android:background="#1AFFFFFF" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <EditText
+                android:id="@+id/cmdInput"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:hint="console cmd e.g. ver xous"
+                android:textColorHint="#FF4A5560"
+                android:textColor="@color/log_text"
+                android:fontFamily="monospace"
+                android:textSize="12sp"
+                android:inputType="text"
+                android:imeOptions="actionSend"
+                android:maxLines="1" />
+
+            <Button
+                android:id="@+id/btnSend"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Send" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/ledControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- ========== SOLID COLOR ========== -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Solid color"
+                android:textColor="@color/badge_green"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:textSize="13sp"
+                android:layout_marginTop="4dp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Effect:"
+                android:textColor="@color/log_text"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:layout_marginTop="2dp" />
+
+            <RadioGroup
+                android:id="@+id/effectGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/effectFlash"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Flash"
+                    android:textColor="@color/log_text"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp"
+                    android:checked="true" />
+
+                <RadioButton
+                    android:id="@+id/effectBreathe"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Breathe"
+                    android:textColor="@color/log_text"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp" />
+
+                <RadioButton
+                    android:id="@+id/effectRotate"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Rotate"
+                    android:textColor="@color/log_text"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp" />
+            </RadioGroup>
+
+            <!-- Custom color: hex + preview swatch + Apply -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="4dp">
+
+                <View
+                    android:id="@+id/solidSwatch"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="#FFFF8000" />
+
+                <EditText
+                    android:id="@+id/solidHex"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:hint="ff8000"
+                    android:textColorHint="#FF4A5560"
+                    android:textColor="@color/log_text"
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:inputType="text"
+                    android:maxLength="7"
+                    android:maxLines="1" />
+
+                <Button
+                    android:id="@+id/btnSolid"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Apply" />
+            </LinearLayout>
+
+            <!-- Color swatches: tap = apply the currently-selected effect at that hue -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Quick colors (tap to apply):"
+                android:textColor="@color/log_text"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:layout_marginTop="4dp" />
+
+            <LinearLayout
+                android:id="@+id/swatchRow"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:orientation="horizontal"
+                android:layout_marginTop="2dp"
+                android:baselineAligned="false">
+
+                <View
+                    android:id="@+id/swRed"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FFFF0000" />
+
+                <View
+                    android:id="@+id/swOrange"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FFFF8000" />
+
+                <View
+                    android:id="@+id/swYellow"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FFFFFF00" />
+
+                <View
+                    android:id="@+id/swGreen"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FF00FF00" />
+
+                <View
+                    android:id="@+id/swCyan"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FF00FFFF" />
+
+                <View
+                    android:id="@+id/swBlue"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FF0000FF" />
+
+                <View
+                    android:id="@+id/swMagenta"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:background="#FFFF00FF" />
+
+                <View
+                    android:id="@+id/swWhite"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="#FFFFFFFF" />
+            </LinearLayout>
+
+            <!-- Divider between color groups -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="4dp"
+                android:background="#22FFFFFF" />
+
+            <!-- ========== MULTI-COLOR EFFECTS ========== -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Multi-color"
+                android:textColor="@color/badge_green"
+                android:fontFamily="monospace"
+                android:textStyle="bold"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnRainbow"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Rainbow (full spectrum)" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Hue slice (arc of the color wheel, 0-255):"
+                android:textColor="@color/log_text"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:layout_marginTop="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/hueLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="base 0"
+                    android:textColor="@color/log_text"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp"
+                    android:minWidth="64dp" />
+
+                <View
+                    android:id="@+id/hueSwatch"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="#FFFF0000" />
+
+                <SeekBar
+                    android:id="@+id/hueBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="255"
+                    android:progress="0" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/boundLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="bound 255"
+                    android:textColor="@color/log_text"
+                    android:fontFamily="monospace"
+                    android:textSize="11sp"
+                    android:minWidth="64dp" />
+
+                <View
+                    android:id="@+id/boundSwatch"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="#FFFF0000" />
+
+                <SeekBar
+                    android:id="@+id/boundBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="255"
+                    android:progress="255" />
+
+                <Button
+                    android:id="@+id/btnHue"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Apply" />
+            </LinearLayout>
+
+            <!-- Divider before Revert -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="4dp"
+                android:background="#22FFFFFF" />
+
+            <Button
+                android:id="@+id/btnRevert"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Revert to default (rainbow) &amp; clear saved preset" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ===== Firmware panel ===== -->
+    <LinearLayout
+        android:id="@+id/panelFirmware"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:padding="8dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Choose firmware to install"
+            android:textColor="@color/badge_green"
+            android:fontFamily="monospace"
+            android:textStyle="bold"
+            android:paddingBottom="4dp" />
+
+        <RadioGroup
+            android:id="@+id/firmwareChoices"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnFlashGuide"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textStyle="bold"
+            app:icon="@drawable/ic_flash"
+            app:iconGravity="textStart"
+            android:text="Flash firmware — guide me" />
+
+        <Button
+            android:id="@+id/btnSaveFirmware"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Download firmware only" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="4dp"
+        android:background="#22FFFFFF" />
+
+    <ScrollView
+        android:id="@+id/logScroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#FF05070A"
+        android:padding="4dp">
+
+        <TextView
+            android:id="@+id/logText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textColor="@color/log_text"
+            android:textSize="10sp"
+            android:textIsSelectable="true"
+            android:text="" />
+    </ScrollView>
+
+</LinearLayout>

@@ -191,6 +191,11 @@ fn main() -> ! {
     *mode.lock().unwrap() = init_mode;
     vault_ui.set_global_config(global_config.clone());
 
+    // Boot-restore of the LED preset must happen AFTER GlobalConfig::init has
+    // already sent SetGene → express() (which triggers the default rainbow),
+    // so the Force here wins. Missing/invalid PDDB key is a no-op.
+    global_config.lock().unwrap().restore_led_preset();
+
     log::info!("Fido2 service");
     fido2::fido2_handler(conn, allow_host.clone(), opensk_mutex.clone(), animate.clone());
 

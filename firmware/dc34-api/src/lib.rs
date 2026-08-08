@@ -13,6 +13,10 @@ pub const DC34_GENE: &str = "gene";
 pub const DC34_IMAGE: &str = "image";
 pub const DC34_IMAGE_DEFCON: &str = "image_defcon";
 pub const DC34_ALWAYS_ON: &str = "always_on";
+/// Persisted LED preset: exactly 16 bytes = padded serialized `Haploid` phenotype.
+/// Loaded at vault boot and re-sent as `LedManagerOp::Force` after the default
+/// SetGene (so Force wins). Wiped by `led revert` back to default (rainbow).
+pub const DC34_LED_PRESET: &str = "led_preset";
 pub const DC34_BIO: &str = "bio.code";
 pub const DC34_BIO_PINS: &str = "bio.pins";
 pub const DC34_BIO_CLK: &str = "bio.clk";

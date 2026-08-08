@@ -1,42 +1,46 @@
-// led.rs — Phase 3 LED preset control over USB-serial REPL.
+// led.rs — LED preset control over USB-serial REPL, with PDDB persistence.
 //
-// Sends LedManagerOp::Force scalar messages to the LED_SERVER with a computed
-// Haploid phenotype (9 bytes: cd_period, cd_rate, cd_dir, sat, hue_ratedir,
-// hue_base, hue_bound, chaser, nonlin). Presets computed host-side.
+// Sends LedManagerOp::Force blocking-scalar messages to the LED_SERVER carrying
+// a 16-byte padded `Haploid` phenotype. Successful presets are persisted to
+// PDDB (DC34_DICT/led_preset) so the vault can restore them at boot.
 //
 // Subcommands:
-//   led rainbow                 → full hue wheel, rotating
-//   led solid <RRGGBB>          → single color across the ring
+//   led rainbow                 → full hue wheel, moving
 //   led hue <base> <bound>      → arbitrary hue-range slice (both 0-255)
-//   led force <32-hex>          → raw 16-byte Haploid, hex-encoded
-//   led revert                  → re-express the stored gene (goes back to default,
-//                                 which is rainbow in the current build)
+//   led solid   <RRGGBB>        → single hue, ~0.6s cycle brightness (looks flashy)
+//   led flash   <RRGGBB>        → alias for `solid` (same phenotype)
+//   led breathe <RRGGBB>        → single hue, ~7s slow fade in/out
+//   led rotate  <RRGGBB>        → single hue, brightness peaks spinning around the ring
+//   led revert                  → wipe persisted preset, restore rainbow default
+//   led force <32-hex>          → raw 16-byte Haploid, advanced/debug
 //
-// Replies: "OK" on success, "ERR <reason>" on parse/transport failure.
+// Reply: "OK" on success, "ERR <reason>" on parse/transport failure.
 //
-// Notes:
-//   - Force is *volatile*. A QR-code gene mating (which triggers Syngamy on the
-//     LED server) will re-express the stored gene and clobber the preset. In the
-//     current build the default expression is also rainbow (Diploid::phenotype
-//     override in dc34-api), so post-mating you'll snap back to rainbow. Send
-//     the desired preset again to restore it.
-//   - Force does NOT persist across reboot. The vault sends SetGene at boot,
-//     which triggers express() → rainbow (current default). Send preset again
-//     after reboot if desired.
+// Notes on the animation model (see bio/lightgenes/main.c:do_lightgene):
+//   Brightness is `127 * (1 + cos(spacetime))` where
+//     space = 2π * cd_period * i / (count-1)     — spatial phase per LED
+//     time  = 2π * indextime / tau(cd_rate)      — temporal phase, sawtooth
+//     spacetime = space + time  (cd_dir > 128) or space - time (else)
+//   So there is *always* time variation — a truly-static solid isn't possible
+//   with this coprocessor. `solid`/`flash` is short-period pulse, `breathe`
+//   is long-period, `rotate` combines both to spin a bright band.
 
 use core::fmt::Write;
+use std::io::Write as _;
 
-use dc34_api::{Haploid, LedManagerOp, LED_SERVER};
+use dc34_api::{DC34_DICT, DC34_LED_PRESET, Haploid, LED_SERVER, LedManagerOp};
 use num_traits::ToPrimitive;
+use pddb::Pddb;
 
 use crate::{CommonEnv, ShellCmdApi};
 
 pub struct Led {
     conn: Option<xous::CID>,
+    pddb: Pddb,
 }
 
 impl Led {
-    pub fn new() -> Self { Led { conn: None } }
+    pub fn new() -> Self { Led { conn: None, pddb: Pddb::new() } }
 
     fn conn(&mut self, xns: &xous_names::XousNames) -> xous::CID {
         if let Some(c) = self.conn {
@@ -51,9 +55,13 @@ impl Led {
     fn send_force(&mut self, phenotype: Haploid, xns: &xous_names::XousNames) -> Result<(), String> {
         let cid = self.conn(xns);
         let args = phenotype.serialize_u32();
+        // Must be a BLOCKING scalar: the LED server's Force handler uses
+        // `body.scalar_message_mut()`, which xous defines to return None for
+        // Message::Scalar and Some only for Message::BlockingScalar. Sending a
+        // non-blocking scalar makes the handler silently no-op.
         xous::send_message(
             cid,
-            xous::Message::new_scalar(
+            xous::Message::new_blocking_scalar(
                 LedManagerOp::Force.to_usize().unwrap(),
                 args[0] as usize,
                 args[1] as usize,
@@ -62,6 +70,30 @@ impl Led {
             ),
         )
         .map_err(|e| format!("send failed: {:?}", e))?;
+        Ok(())
+    }
+
+    /// Persist the last-applied preset so the vault can restore it at boot.
+    /// Writes exactly 16 bytes (padded serialization of the Haploid).
+    fn persist(&self, phenotype: &Haploid) {
+        let args = phenotype.serialize_u32();
+        let mut bytes = [0u8; 16];
+        for (i, word) in args.iter().enumerate() {
+            bytes[i * 4..(i + 1) * 4].copy_from_slice(&word.to_le_bytes());
+        }
+        if let Ok(mut key) =
+            self.pddb.get(DC34_DICT, DC34_LED_PRESET, None, true, true, Some(16), None::<fn()>)
+        {
+            let _ = key.write_all(&bytes);
+        }
+    }
+
+    fn delete_persist(&self) { let _ = self.pddb.delete_key(DC34_DICT, DC34_LED_PRESET, None); }
+
+    /// Ship + save in one call.
+    fn apply_and_persist(&mut self, p: Haploid, xns: &xous_names::XousNames) -> Result<(), String> {
+        self.send_force(p, xns)?;
+        self.persist(&p);
         Ok(())
     }
 }
@@ -79,7 +111,6 @@ fn rgb_to_hue_sat(r: u8, g: u8, b: u8) -> (u8, u8) {
     if d == 0 {
         return (0, sat);
     }
-    // hue in degrees 0-360
     let h_deg = if max == r {
         (60 * (g - b)) / d
     } else if max == g {
@@ -102,29 +133,62 @@ fn parse_rrggbb(s: &str) -> Option<(u8, u8, u8)> {
     Some((parse_hex_u8(&s[0..2])?, parse_hex_u8(&s[2..4])?, parse_hex_u8(&s[4..6])?))
 }
 
-fn rainbow_phenotype() -> Haploid {
+pub fn rainbow_phenotype() -> Haploid {
     Haploid {
-        cd_period: 1,      // one hue spread around the ring
-        cd_rate: 64,       // moderate rotation
-        cd_dir: 128,       // clockwise
-        sat: 255,          // full saturation
-        hue_ratedir: 2,    // slow hue cycle (mod 14)
-        hue_base: 0,       // start of hue wheel
-        hue_bound: 255,    // end of hue wheel
-        chaser: 255,       // large = chaser disabled
-        nonlin: 128,       // linear-ish brightness
+        cd_period: 1,
+        cd_rate: 64,
+        cd_dir: 128,
+        sat: 255,
+        hue_ratedir: 2,
+        hue_base: 0,
+        hue_bound: 255,
+        chaser: 255,
+        nonlin: 128,
     }
 }
 
-fn solid_phenotype(hue: u8, sat: u8) -> Haploid {
+/// `led solid` — cd_period=0 + cd_rate=0 gives tau=60 (~0.6 s brightness cycle).
+/// Called "flash" by the user; that's what it looks like on the ring.
+fn flash_phenotype(hue: u8, sat: u8) -> Haploid {
     Haploid {
-        cd_period: 0,      // no spatial hue differential
-        cd_rate: 0,        // static, no rotation
+        cd_period: 0,
+        cd_rate: 0,
         cd_dir: 128,
         sat,
-        hue_ratedir: 0,    // no hue cycling
+        hue_ratedir: 0,
         hue_base: hue,
-        hue_bound: hue,    // single hue only
+        hue_bound: hue,
+        chaser: 255,
+        nonlin: 128,
+    }
+}
+
+/// `led breathe` — cd_period=0 + cd_rate=255 gives tau=700 (~7 s slow pulse).
+fn breathe_phenotype(hue: u8, sat: u8) -> Haploid {
+    Haploid {
+        cd_period: 0,
+        cd_rate: 255,
+        cd_dir: 128,
+        sat,
+        hue_ratedir: 0,
+        hue_base: hue,
+        hue_bound: hue,
+        chaser: 255,
+        nonlin: 128,
+    }
+}
+
+/// `led rotate` — cd_period > 0 gives spatial brightness peaks; cd_rate > 0
+/// makes them rotate. Same hue everywhere.
+fn rotate_phenotype(hue: u8, sat: u8) -> Haploid {
+    Haploid {
+        cd_period: 2,
+        cd_rate: 96,
+        cd_dir: 200,   // > 128 → clockwise
+        sat,
+        hue_ratedir: 0,
+        hue_base: hue,
+        hue_bound: hue,
         chaser: 255,
         nonlin: 128,
     }
@@ -144,6 +208,34 @@ fn hue_range_phenotype(base: u8, bound: u8) -> Haploid {
     }
 }
 
+/// Small helper: read a hex color from the arg iterator and produce a phenotype
+/// using the given constructor.
+fn parse_color_effect<F>(
+    parts: &mut core::str::SplitWhitespace,
+    ret: &mut String,
+    build: F,
+) -> Option<Haploid>
+where
+    F: Fn(u8, u8) -> Haploid,
+{
+    let hex = match parts.next() {
+        Some(h) => h,
+        None => {
+            let _ = write!(ret, "ERR missing <RRGGBB>");
+            return None;
+        }
+    };
+    let (r, g, b) = match parse_rrggbb(hex) {
+        Some(rgb) => rgb,
+        None => {
+            let _ = write!(ret, "ERR bad hex color");
+            return None;
+        }
+    };
+    let (hue, sat) = rgb_to_hue_sat(r, g, b);
+    Some(build(hue, sat))
+}
+
 impl<'a> ShellCmdApi<'a> for Led {
     cmd_api!(led);
 
@@ -153,51 +245,39 @@ impl<'a> ShellCmdApi<'a> for Led {
         let sub = match parts.next() {
             Some(s) => s,
             None => {
-                write!(ret, "ERR usage: led {{rainbow|solid <RRGGBB>|hue <base> <bound>|force <32-hex>|revert}}")
-                    .ok();
+                write!(
+                    ret,
+                    "ERR usage: led {{rainbow|hue <base> <bound>|solid <RRGGBB>|flash <RRGGBB>|breathe <RRGGBB>|rotate <RRGGBB>|force <32-hex>|revert}}"
+                )
+                .ok();
                 return Ok(Some(ret));
             }
         };
 
-        // Build a fresh xous_names handle (cheap) for the LED_SERVER lookup.
         let xns = xous_names::XousNames::new().unwrap();
 
-        match sub {
-            "rainbow" => match self.send_force(rainbow_phenotype(), &xns) {
-                Ok(()) => write!(ret, "OK").ok(),
-                Err(e) => write!(ret, "ERR {}", e).ok(),
+        let result: Result<(), String> = match sub {
+            "rainbow" => self.apply_and_persist(rainbow_phenotype(), &xns),
+            "solid" | "flash" => match parse_color_effect(&mut parts, &mut ret, flash_phenotype) {
+                Some(p) => self.apply_and_persist(p, &xns),
+                None => return Ok(Some(ret)),
             },
-            "solid" => {
-                let hex = match parts.next() {
-                    Some(h) => h,
-                    None => {
-                        write!(ret, "ERR usage: led solid <RRGGBB>").ok();
-                        return Ok(Some(ret));
-                    }
-                };
-                let (r, g, b) = match parse_rrggbb(hex) {
-                    Some(rgb) => rgb,
-                    None => {
-                        write!(ret, "ERR bad hex color").ok();
-                        return Ok(Some(ret));
-                    }
-                };
-                let (hue, sat) = rgb_to_hue_sat(r, g, b);
-                match self.send_force(solid_phenotype(hue, sat), &xns) {
-                    Ok(()) => write!(ret, "OK").ok(),
-                    Err(e) => write!(ret, "ERR {}", e).ok(),
-                }
-            }
+            "breathe" => match parse_color_effect(&mut parts, &mut ret, breathe_phenotype) {
+                Some(p) => self.apply_and_persist(p, &xns),
+                None => return Ok(Some(ret)),
+            },
+            "rotate" => match parse_color_effect(&mut parts, &mut ret, rotate_phenotype) {
+                Some(p) => self.apply_and_persist(p, &xns),
+                None => return Ok(Some(ret)),
+            },
             "hue" => {
                 let base = parts.next().and_then(|s| s.parse::<u8>().ok());
                 let bound = parts.next().and_then(|s| s.parse::<u8>().ok());
                 match (base, bound) {
-                    (Some(b1), Some(b2)) => match self.send_force(hue_range_phenotype(b1, b2), &xns) {
-                        Ok(()) => write!(ret, "OK").ok(),
-                        Err(e) => write!(ret, "ERR {}", e).ok(),
-                    },
+                    (Some(b1), Some(b2)) => self.apply_and_persist(hue_range_phenotype(b1, b2), &xns),
                     _ => {
-                        write!(ret, "ERR usage: led hue <base 0-255> <bound 0-255>").ok()
+                        write!(ret, "ERR usage: led hue <base 0-255> <bound 0-255>").ok();
+                        return Ok(Some(ret));
                     }
                 }
             }
@@ -223,33 +303,30 @@ impl<'a> ShellCmdApi<'a> for Led {
                         }
                     }
                 }
-                let phenotype = match Haploid::deserialize(&bytes[..std::mem::size_of::<Haploid>()]) {
-                    Some(p) => p,
+                match Haploid::deserialize(&bytes[..std::mem::size_of::<Haploid>()]) {
+                    Some(p) => self.apply_and_persist(p, &xns),
                     None => {
                         write!(ret, "ERR could not deserialize Haploid").ok();
                         return Ok(Some(ret));
                     }
-                };
-                match self.send_force(phenotype, &xns) {
-                    Ok(()) => write!(ret, "OK").ok(),
-                    Err(e) => write!(ret, "ERR {}", e).ok(),
                 }
             }
             "revert" => {
-                // In the current build, "default" is rainbow (Diploid::phenotype
-                // override), so revert == rainbow. When Phase 3 is expanded to give
-                // presets first-class persistent status, this should re-express the
-                // stored gene from the LED server instead.
-                match self.send_force(rainbow_phenotype(), &xns) {
-                    Ok(()) => write!(ret, "OK").ok(),
-                    Err(e) => write!(ret, "ERR {}", e).ok(),
-                }
+                // Wipe persisted preset so next boot uses default, and force
+                // rainbow immediately so the ring changes right now.
+                self.delete_persist();
+                self.send_force(rainbow_phenotype(), &xns)
             }
             other => {
-                write!(ret, "ERR unknown subcommand: {}", other).ok()
+                write!(ret, "ERR unknown subcommand: {}", other).ok();
+                return Ok(Some(ret));
             }
         };
 
+        match result {
+            Ok(()) => write!(ret, "OK").ok(),
+            Err(e) => write!(ret, "ERR {}", e).ok(),
+        };
         let _ = env;
         Ok(Some(ret))
     }

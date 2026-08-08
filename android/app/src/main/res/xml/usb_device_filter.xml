@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Baochip Baosec-lite (DEF CON 34 badge): VID 0x1d50 (7504), PID 0x6198 (25000) -->
+    <usb-device vendor-id="7504" product-id="25000" />
+    <!-- Baochip Dabao variant: PID 0x6197 (24999) -->
+    <usb-device vendor-id="7504" product-id="24999" />
+</resources>

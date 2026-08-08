@@ -1,0 +1,36 @@
+# Signing material — NEVER commit
+keystore.properties
+release.keystore
+*.jks
+*.keystore
+
+# Build outputs
+build/
+app/build/
+.gradle/
+
+# Local, machine-specific
+local.properties
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Kotlin / native
+*.hprof
+captures/
+
+# macOS
+.DS_Store
+
+# Editor swap / backup
+*~
+*.swp
+*.swo
+.*.kate-swp
+..*.kate-swp
