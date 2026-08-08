@@ -12,6 +12,7 @@ pub const DC34_BADGE: &str = "badge";
 pub const DC34_GENE: &str = "gene";
 pub const DC34_IMAGE: &str = "image";
 pub const DC34_IMAGE_DEFCON: &str = "image_defcon";
+pub const DC34_ALWAYS_ON: &str = "always_on";
 pub const DC34_BIO: &str = "bio.code";
 pub const DC34_BIO_PINS: &str = "bio.pins";
 pub const DC34_BIO_CLK: &str = "bio.clk";

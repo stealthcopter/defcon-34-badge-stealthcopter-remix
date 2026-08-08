@@ -35,9 +35,34 @@ This is a single vendored monorepo. All source is under this root:
 ./build.sh
 ```
 
-Artifacts land in `xous-core/target/riscv32imac-unknown-xous-elf/release/{loader,xous,swap}.uf2`.
+After a successful build, three UF2 files are produced. They live at:
+
+```
+xous-core/target/riscv32imac-unknown-xous-elf/release/loader.uf2
+xous-core/target/riscv32imac-unknown-xous-elf/release/xous.uf2
+xous-core/target/riscv32imac-unknown-xous-elf/release/swap.uf2
+```
+
+The paths are also printed by `build.sh` when it finishes.
 
 To flash: hold any button while plugging in the module — it enumerates as USB mass storage. Copy all three `.uf2` files onto it, unmount, and press any button to boot.
+
+## Defaults (all changeable)
+
+Out of the box, a freshly-flashed badge behaves as follows:
+
+| Behavior             | Default             | Change on-device                                       | Change from Android app                                            |
+|----------------------|---------------------|--------------------------------------------------------|--------------------------------------------------------------------|
+| Screen always on     | **ON**              | Idle menu → **Toggle Always-On Screen** (persists)     | Not yet exposed                                                    |
+| LED pattern          | **Rainbow**         | QR-code gene mating (transient — snaps back to rainbow)| `led rainbow` / `led solid <RRGGBB>` / `led hue …` / `led revert`  |
+| Defcon-slot image    | **Stealthcopter**   | Not exposed                                            | `imagedc clear` (reverts to built-in) or `imagedc <chunks>` upload |
+| User-slot image      | None (unset)        | Not exposed                                            | `image clear` or `image <chunks>` upload                           |
+
+- **Always-on state** is stored in PDDB (`DC34_DICT/always_on`, 1 byte) and survives reboots. Toggle it from the idle menu (`∴` from the idle screen) → "Toggle Always-On Screen". You'll see a confirmation notification.
+- **LED presets** are volatile — a reboot or QR-mating snaps back to rainbow. Re-send from the app if you want a specific color to persist through a mating exchange.
+- **Images** persist across reboots. If a slot is empty, the badge falls back to the compiled-in image (stealthcopter for the Defcon slot).
+
+See `ANDROID_SPEC.md` for the full app-facing USB-serial protocol.
 
 ## Conference Mode
 

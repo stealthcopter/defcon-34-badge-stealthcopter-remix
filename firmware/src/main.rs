@@ -1036,6 +1036,25 @@ fn main() -> ! {
                     global_config.lock().unwrap().render_gene();
                 }
             }),
+            Some(VaultOp::ToggleAlwaysOn) => {
+                let new_state = global_config.lock().unwrap().toggle_always_on();
+                // Apply immediately so the user sees the effect without waiting for a mode
+                // transition. Passing the current mode keeps the power-server state
+                // consistent with what update_power_state would send on the next tick.
+                let mode_now = *mode.lock().unwrap();
+                global_config.lock().unwrap().update_power_state(mode_now);
+                modals
+                    .show_notification(
+                        if new_state {
+                            "Always-on screen: ON"
+                        } else {
+                            "Always-on screen: OFF (timeout re-enabled)"
+                        },
+                        None,
+                    )
+                    .ok();
+                vault_ui.redraw();
+            }
             Some(VaultOp::Jig) => {
                 *mode.lock().unwrap() = VaultMode::FactoryTest;
                 vault_ui.reset_factory_test();

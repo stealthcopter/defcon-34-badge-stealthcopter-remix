@@ -75,6 +75,8 @@ pub(crate) enum VaultOp {
     BioActive = 1027,
     // Phase 2: uploadable defcon-logo replacement image (mirror of ImageLoad)
     ImageDefconLoad = 1028,
+    // Toggle the always-on display; persisted to PDDB, applied immediately.
+    ToggleAlwaysOn = 1029,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

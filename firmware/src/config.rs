@@ -62,6 +62,11 @@ pub(crate) struct GlobalConfig {
     final_rate: MutationRate,
     nonce_mine: Option<[u8; 12]>,
     previous_mode: Option<VaultMode>,
+    /// User-controllable: when true, disable the screen-off timeout and the pre-off
+    /// fade so the display stays lit indefinitely. Persisted at DC34_DICT/DC34_ALWAYS_ON.
+    /// Defaults to true (the "always-on" build behavior); user can toggle via the
+    /// badge menu or a future USB command.
+    display_always_on: bool,
 }
 
 impl GlobalConfig {
@@ -196,6 +201,13 @@ impl GlobalConfig {
 
         let power_server = xns.request_connection_blocking(dc34_api::POWER_MANAGER_SERVER).unwrap();
 
+        // Load always-on preference. Default = true (screen stays lit) when the key
+        // is missing or empty — matches the "always-on" build baseline the user expects.
+        let mut always_on_buf = [1u8; 1];
+        let always_on_len = read_pddb(&pddb, DC34_ALWAYS_ON, &mut always_on_buf);
+        let display_always_on = if always_on_len == 1 { always_on_buf[0] != 0 } else { true };
+        log::info!("display_always_on: {}", display_always_on);
+
         (
             GlobalConfig {
                 is_developer,
@@ -214,9 +226,26 @@ impl GlobalConfig {
                 final_rate: MutationRate::Baseline,
                 nonce_mine: None,
                 previous_mode: None,
+                display_always_on,
             },
             initial_mode,
         )
+    }
+
+    pub fn display_always_on(&self) -> bool { self.display_always_on }
+
+    /// Flip the always-on flag, persist to PDDB, and return the new state.
+    /// Caller should invoke update_power_state() afterward so the change applies
+    /// immediately without waiting for a mode transition.
+    pub fn toggle_always_on(&mut self) -> bool {
+        self.display_always_on = !self.display_always_on;
+        let pddb = pddb::Pddb::new();
+        if let Ok(mut key) =
+            pddb.get(DC34_DICT, DC34_ALWAYS_ON, None, true, true, Some(1), None::<fn()>)
+        {
+            let _ = key.write(&[if self.display_always_on { 1 } else { 0 }]);
+        }
+        self.display_always_on
     }
 
     #[allow(dead_code)]
@@ -256,12 +285,35 @@ impl GlobalConfig {
         const MEDIUM_TIMEOUT: usize = 8 * 60 * 60;
         #[cfg(feature = "uber")]
         const LONG_TIMEOUT: usize = 8 * 60 * 60;
-        let _ = (SHORT_TIMEOUT, MEDIUM_TIMEOUT, LONG_TIMEOUT);
-        // Always-on display: unconditionally disable the power-manager idle timeout
-        // on every tick. Must re-send every tick because PowerManagerOp::Boot (fired
-        // from main.rs power_manager_boot_finished()) re-enables it after our first
-        // disable. Runtime USB toggle deferred to Phase 3.
-        self.power_manager_config(false, Some(0));
+        if self.display_always_on {
+            // Always-on: unconditionally disable the power-manager idle timeout
+            // on every tick. Must re-send every tick because PowerManagerOp::Boot
+            // (fired from main.rs power_manager_boot_finished()) re-enables it after
+            // our first disable.
+            let _ = (SHORT_TIMEOUT, MEDIUM_TIMEOUT, LONG_TIMEOUT);
+            self.power_manager_config(false, Some(0));
+        } else if self.previous_mode != Some(current_mode) {
+            // Timeouts-enabled path: only reconfigure when the mode changes, to avoid
+            // spamming the power server with redundant scalar messages.
+            let (enable, duration_sec) = match current_mode {
+                VaultMode::About => (true, SHORT_TIMEOUT),
+                VaultMode::ConfirmGene => (true, MEDIUM_TIMEOUT),
+                VaultMode::FactoryTest => (false, 0),
+                VaultMode::StandAloneTest => (false, 0),
+                VaultMode::DefconHelp => (true, SHORT_TIMEOUT),
+                VaultMode::TokenHelp => (true, MEDIUM_TIMEOUT),
+                VaultMode::Idle => (true, SHORT_TIMEOUT),
+                VaultMode::IdleDevMode => (true, SHORT_TIMEOUT),
+                VaultMode::Password => (true, MEDIUM_TIMEOUT),
+                VaultMode::Totp => (true, MEDIUM_TIMEOUT),
+                VaultMode::GeneScan => (true, LONG_TIMEOUT),
+                VaultMode::ResponseGene { quantum: _ } => (true, LONG_TIMEOUT),
+                VaultMode::ShowKey { quantum: _ } => (true, LONG_TIMEOUT),
+                VaultMode::TokenTour => (true, MEDIUM_TIMEOUT),
+                VaultMode::Tour => (true, MEDIUM_TIMEOUT),
+            };
+            self.power_manager_config(enable, Some(duration_sec));
+        }
         self.previous_mode = Some(current_mode);
     }
 
@@ -375,9 +427,10 @@ impl GlobalConfig {
 
     pub fn clear_nonces(&mut self) { self.nonce_mine.take(); }
 
-    pub fn display_fading(&mut self, _enable: bool) {
-        // Always-on display: ignore requests to fade. Runtime toggle deferred to Phase 3.
-        let enable = false;
+    pub fn display_fading(&mut self, enable: bool) {
+        // When always-on is engaged, ignore fade requests (screen never dims).
+        // Otherwise honor the caller's choice as originally intended.
+        let enable = if self.display_always_on { false } else { enable };
         if self.display_fade_cache != enable {
             log::debug!("setting fade: {:?}", enable);
             xous::send_message(
