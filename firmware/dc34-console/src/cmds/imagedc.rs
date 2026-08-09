@@ -1,14 +1,8 @@
-// imagedc.rs — Phase 2 mirror of `image` for the Defcon-logo replacement slot.
+// imagedc.rs — mirror of `image` for the Defcon-logo replacement slot. Same
+// multi-frame wire format and semantics; the only difference is the PDDB key
+// (DC34_IMAGE_DEFCON) and the opcode used to signal the vault (1028).
 //
-// Same wire format as `image`: 70-byte chunks (idx u16 BE, 64 B pixels, CRC32 u32 BE),
-// base64-encoded, 32 chunks total = 128×128×1bpp = 2048 B.
-//
-// Writes to PDDB dict DC34_DICT, key DC34_IMAGE_DEFCON. Signals _Vault2_ with
-// opcode 1028 (VaultOp::ImageDefconLoad).
-//
-// Subcommand:
-//   imagedc clear         → wipe stored defcon replacement, fall back to built-in dc_logo
-//   imagedc <base64>      → send chunk (repeat 32×)
+// See image.rs for the wire-format doc.
 
 use core::fmt::Write;
 use std::io::Write as FsWrite;
@@ -24,41 +18,53 @@ const CHUNK_INDEX_BYTES: usize = 2;
 const CHUNK_CRC_BYTES: usize = 4;
 const CHUNK_WIRE_SIZE: usize = CHUNK_INDEX_BYTES + CHUNK_DATA_SIZE + CHUNK_CRC_BYTES; // 70
 const NUM_CHUNKS: usize = 32;
-const BITMAP_WORDS: usize = 512;
+const FRAME_BYTES: usize = 2048;
+const MAX_FRAMES: usize = 32;
 
 pub struct ImageDc {
-    chunks: Vec<Option<[u8; CHUNK_DATA_SIZE]>>,
+    frames: Vec<Vec<Option<[u8; CHUNK_DATA_SIZE]>>>,
     received_count: usize,
+    frame_count: usize,
     pddb: Pddb,
 }
 
 impl ImageDc {
     pub fn new() -> Self {
-        ImageDc { chunks: vec![None; NUM_CHUNKS], received_count: 0, pddb: Pddb::new() }
+        let mut s =
+            ImageDc { frames: Vec::new(), received_count: 0, frame_count: 1, pddb: Pddb::new() };
+        s.reset_frames();
+        s
     }
 
-    pub fn is_complete(&self) -> bool { self.received_count == NUM_CHUNKS }
+    fn reset_frames(&mut self) {
+        self.frames = (0..self.frame_count).map(|_| vec![None; NUM_CHUNKS]).collect();
+        self.received_count = 0;
+    }
 
-    pub fn to_bitmap(&self) -> [u32; BITMAP_WORDS] {
-        assert!(self.is_complete(), "bitmap not yet complete");
-        let mut bitmap = [0u32; BITMAP_WORDS];
-        for (chunk_idx, slot) in self.chunks.iter().enumerate() {
-            let data = slot.as_ref().unwrap();
-            let word_base = chunk_idx * (CHUNK_DATA_SIZE / 4);
-            for w in 0..(CHUNK_DATA_SIZE / 4) {
-                let o = w * 4;
-                bitmap[word_base + w] =
-                    u32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+    fn is_complete(&self) -> bool { self.received_count == NUM_CHUNKS * self.frame_count }
+
+    fn to_blob(&self) -> Vec<u8> {
+        // Wire format packs pixels as big-endian u32 groups; the display reads
+        // stored bytes as little-endian u32s. Byte-swap each 4-byte group so
+        // the stored bytes match what the display expects. See image.rs for
+        // the full rationale.
+        let mut out = vec![0u8; self.frame_count * FRAME_BYTES];
+        for (fi, frame) in self.frames.iter().enumerate() {
+            for (ci, slot) in frame.iter().enumerate() {
+                if let Some(bytes) = slot {
+                    let base = fi * FRAME_BYTES + ci * CHUNK_DATA_SIZE;
+                    let mut i = 0;
+                    while i < CHUNK_DATA_SIZE {
+                        out[base + i]     = bytes[i + 3];
+                        out[base + i + 1] = bytes[i + 2];
+                        out[base + i + 2] = bytes[i + 1];
+                        out[base + i + 3] = bytes[i];
+                        i += 4;
+                    }
+                }
             }
         }
-        bitmap
-    }
-
-    pub fn clear(&mut self) {
-        for slot in self.chunks.iter_mut() {
-            *slot = None;
-        }
-        self.received_count = 0;
+        out
     }
 }
 
@@ -67,21 +73,38 @@ impl<'a> ShellCmdApi<'a> for ImageDc {
 
     fn process(&mut self, args: String, _env: &mut CommonEnv) -> Result<Option<String>, xous::Error> {
         let mut ret = String::new();
-        if args == "clear" {
-            self.clear();
+        let trimmed = args.trim();
+
+        if trimmed == "clear" {
             self.pddb.delete_key(DC34_DICT, DC34_IMAGE_DEFCON, None).ok();
+            self.frame_count = 1;
+            self.reset_frames();
             let conn = _env.xns.request_connection_blocking("_Vault2_").unwrap();
             xous::send_message(conn, xous::Message::new_scalar(1028, 0, 0, 0, 0)).ok();
             write!(ret, "CLEAR").unwrap();
             return Ok(Some(ret));
         }
 
-        let b64 = args.trim();
+        if let Some(rest) = trimmed.strip_prefix("frames ") {
+            match rest.trim().parse::<usize>() {
+                Ok(n) if (1..=MAX_FRAMES).contains(&n) => {
+                    self.frame_count = n;
+                    self.reset_frames();
+                    let _ = n;
+                    write!(ret, "OK").unwrap();
+                }
+                _ => {
+                    write!(ret, "ERR frames must be 1..{}", MAX_FRAMES).unwrap();
+                }
+            }
+            return Ok(Some(ret));
+        }
+
+        let b64 = trimmed;
         if b64.is_empty() {
             write!(ret, "ERR").unwrap();
             return Ok(Some(ret));
         }
-
         let decoded = match B64.decode(b64) {
             Ok(d) => d,
             Err(_) => {
@@ -89,48 +112,56 @@ impl<'a> ShellCmdApi<'a> for ImageDc {
                 return Ok(Some(ret));
             }
         };
-
         if decoded.len() != CHUNK_WIRE_SIZE {
             write!(ret, "ERR").unwrap();
             return Ok(Some(ret));
         }
 
-        let index = u16::from_be_bytes([decoded[0], decoded[1]]) as usize;
+        let frame_idx = decoded[0] as usize;
+        let chunk_idx = decoded[1] as usize;
         let received_crc = u32::from_be_bytes([decoded[66], decoded[67], decoded[68], decoded[69]]);
-
         let computed_crc = crc32fast::hash(&decoded[..CHUNK_INDEX_BYTES + CHUNK_DATA_SIZE]);
         if computed_crc != received_crc {
             write!(ret, "ERR").unwrap();
             return Ok(Some(ret));
         }
-
-        if index >= NUM_CHUNKS {
-            write!(ret, "ERR").unwrap();
+        if chunk_idx >= NUM_CHUNKS {
+            write!(ret, "ERR bad_chunk").unwrap();
+            return Ok(Some(ret));
+        }
+        if frame_idx >= self.frame_count {
+            write!(ret, "ERR bad_frame (send `imagedc frames {}` first)", frame_idx + 1).unwrap();
             return Ok(Some(ret));
         }
 
         let mut data_arr = [0u8; CHUNK_DATA_SIZE];
         data_arr.copy_from_slice(&decoded[CHUNK_INDEX_BYTES..CHUNK_INDEX_BYTES + CHUNK_DATA_SIZE]);
-
-        let was_empty = self.chunks[index].is_none();
-        self.chunks[index] = Some(data_arr);
+        let was_empty = self.frames[frame_idx][chunk_idx].is_none();
+        self.frames[frame_idx][chunk_idx] = Some(data_arr);
         if was_empty {
             self.received_count += 1;
         }
 
         if self.is_complete() {
-            {
-                let mut image_key = self
-                    .pddb
-                    .get(DC34_DICT, DC34_IMAGE_DEFCON, None, true, true, Some(2048), None::<fn()>)
-                    .expect("couldn't get PDDB defcon key");
-                let words = self.to_bitmap();
-                let bytes: &[u8] = bytemuck::cast_slice(&words);
-                image_key.write_all(bytes).ok();
+            let blob = self.to_blob();
+            self.pddb.delete_key(DC34_DICT, DC34_IMAGE_DEFCON, None).ok();
+            if let Ok(mut k) = self.pddb.get(
+                DC34_DICT,
+                DC34_IMAGE_DEFCON,
+                None,
+                true,
+                true,
+                Some(blob.len()),
+                None::<fn()>,
+            ) {
+                let _ = k.write_all(&blob);
             }
-            self.clear();
+            let _stored = self.frame_count;
+            self.frame_count = 1;
+            self.reset_frames();
             let conn = _env.xns.request_connection_blocking("_Vault2_").unwrap();
             xous::send_message(conn, xous::Message::new_scalar(1028, 1, 0, 0, 0)).ok();
+            // Reply MUST be exactly "SUCCESS" (see image.rs for rationale).
             write!(ret, "SUCCESS").unwrap();
         } else {
             write!(ret, "OK").unwrap();

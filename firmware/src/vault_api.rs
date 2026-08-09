@@ -77,6 +77,8 @@ pub(crate) enum VaultOp {
     ImageDefconLoad = 1028,
     // Toggle the always-on display; persisted to PDDB, applied immediately.
     ToggleAlwaysOn = 1029,
+    // Set animation FPS (arg1 = fps, clamped 1..=30). Persisted to PDDB.
+    SetAnimFps = 1030,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -222,6 +224,21 @@ pub fn serialize_app_info<'a>(appinfo: &AppInfo) -> Vec<u8> {
         appinfo.count,
     )
     .into_bytes()
+}
+
+/// Global animation timing (milliseconds per frame). Read by the vault redraw
+/// loop when picking which frame of a multi-frame image to blit, and by the
+/// pumper thread when deciding how long to sleep between Redraw messages.
+/// Written by the `SetAnimFps` handler + at boot from the persisted PDDB
+/// value.  Default = 100 ms (10 fps).
+// AtomicU32 (not U64) because the rv32imac target has no native 64-bit atomics.
+// 30 fps = 33 ms/frame min; 1 fps = 1000 ms max — fits easily.
+pub static ANIM_FRAME_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(100);
+
+/// Clamp fps to a sensible range and convert to a per-frame ms value.
+pub fn fps_to_frame_ms(fps: u8) -> u32 {
+    let fps = fps.max(1).min(30) as u32;
+    (1000 + fps / 2) / fps
 }
 
 pub fn basis_change() {

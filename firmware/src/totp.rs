@@ -150,7 +150,15 @@ pub(crate) fn pumper(sid: xous::SID, main_conn: xous::CID, animate: Arc<core::sy
             let self_conn = xous::connect(sid).unwrap();
             loop {
                 let _msg = xous::receive_message(sid).unwrap();
-                tt.sleep_ms(250).unwrap();
+                // Sleep interval tracks the current animation FPS: at 10 fps
+                // → 100 ms, at 4 fps → 250 ms. Loaded per-iter so a live
+                // SetAnimFps update takes effect on the next tick.  Guard
+                // against pathological values with min/max clamps.
+                let sleep_ms = crate::vault_api::ANIM_FRAME_MS
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    .max(30)
+                    .min(1000);
+                tt.sleep_ms(sleep_ms as usize).unwrap();
                 if animate.load(core::sync::atomic::Ordering::SeqCst) {
                     xous::try_send_message(
                         main_conn,

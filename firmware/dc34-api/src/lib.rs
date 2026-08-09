@@ -17,6 +17,10 @@ pub const DC34_ALWAYS_ON: &str = "always_on";
 /// Loaded at vault boot and re-sent as `LedManagerOp::Force` after the default
 /// SetGene (so Force wins). Wiped by `led revert` back to default (rainbow).
 pub const DC34_LED_PRESET: &str = "led_preset";
+/// Animation FPS for the idle-screen multi-frame image (1 byte, u8, 1..=30).
+/// Defaults to 15 if missing/invalid. Drives both the vault's animated_frame
+/// index calc and the pumper sleep interval.
+pub const DC34_ANIM_FPS: &str = "anim_fps";
 pub const DC34_BIO: &str = "bio.code";
 pub const DC34_BIO_PINS: &str = "bio.pins";
 pub const DC34_BIO_CLK: &str = "bio.clk";

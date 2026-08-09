@@ -23,6 +23,9 @@ object ImagePacker {
     const val CHUNK_DATA_SIZE = 64
     const val NUM_CHUNKS = TOTAL_BYTES / CHUNK_DATA_SIZE // 32
     const val CHUNK_WIRE_SIZE = 2 + CHUNK_DATA_SIZE + 4  // 70
+    /** Firmware cap on frames per image slot (must match MAX_FRAMES in
+     *  firmware/dc34-console/src/cmds/image.rs). Extra frames get dropped. */
+    const val MAX_FRAMES = 32
 
     /** How a greyscale image is reduced to 1-bit. */
     enum class Mode { DITHER, THRESHOLD }
@@ -177,12 +180,26 @@ object ImagePacker {
         return out
     }
 
-    /** Build a 70-byte chunk: u16 index || 64-byte data || u32 crc32 (all big-endian). */
-    fun makeChunk(index: Int, data: ByteArray): ByteArray {
+    /**
+     * Build a 70-byte chunk. Wire layout:
+     *   [0]      u8   frame index inside a multi-frame image (0..N-1)
+     *   [1]      u8   chunk index inside the frame (0..31)
+     *   [2..66]  u8*64 pixel data
+     *   [66..70] u32  CRC-32 over [0..66] (big-endian)
+     *
+     * The two index bytes used to be a big-endian u16 chunk index whose high
+     * byte was always 0 in legacy single-frame uploads — reinterpreting the
+     * high byte as `frameIdx` is 100% backward-compatible with the old
+     * firmware (which reads them as `u16 BE chunk_idx` = `frameIdx * 256 + chunkIdx`,
+     * and since we cap frameIdx at 0 for single-frame use the value matches).
+     */
+    fun makeChunk(chunkIdx: Int, data: ByteArray, frameIdx: Int = 0): ByteArray {
         require(data.size == CHUNK_DATA_SIZE)
+        require(chunkIdx in 0..255) { "chunkIdx must fit in a byte" }
+        require(frameIdx in 0..255) { "frameIdx must fit in a byte" }
         val payload = ByteArray(2 + CHUNK_DATA_SIZE)
-        payload[0] = ((index ushr 8) and 0xFF).toByte()
-        payload[1] = (index and 0xFF).toByte()
+        payload[0] = (frameIdx and 0xFF).toByte()
+        payload[1] = (chunkIdx and 0xFF).toByte()
         System.arraycopy(data, 0, payload, 2, CHUNK_DATA_SIZE)
         val crc = CRC32()
         crc.update(payload)

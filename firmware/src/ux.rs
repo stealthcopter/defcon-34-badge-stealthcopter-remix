@@ -532,10 +532,12 @@ pub struct VaultUi {
     batt_polled: bool,
     low_batt_since: Option<Instant>,
 
-    pub user_bitmap: Option<[u32; 512]>,
-    /// Uploadable replacement for the built-in defcon logo (Phase 2).
-    /// When None, `bitmaps::dc_logo::BITMAP` is used as the fallback.
-    pub defcon_bitmap: Option<[u32; 512]>,
+    /// User-uploaded image slot. May be 1 (static) or many (animated) frames.
+    /// Empty vec = no image uploaded.
+    pub user_frames: Vec<[u32; 512]>,
+    /// Uploadable replacement for the built-in defcon logo. Same shape as
+    /// `user_frames`: empty vec = fall back to the compiled `dc_logo::BITMAP`.
+    pub defcon_frames: Vec<[u32; 512]>,
     phase: bool,
     edge: bool,
     last_mode: VaultMode,
@@ -599,13 +601,24 @@ impl VaultUi {
             adc: Adc::new(),
             batt_polled: false,
             low_batt_since: None,
-            user_bitmap: None,
-            defcon_bitmap: None,
+            user_frames: Vec::new(),
+            defcon_frames: Vec::new(),
             phase: false,
             edge: false,
             last_mode: VaultMode::FactoryTest,
             bio_loaded: false,
         }
+    }
+
+    /// Pick which frame of a multi-frame slot to display right now. Per-frame
+    /// time comes from the shared ANIM_FRAME_MS atomic so the user's chosen FPS
+    /// takes effect immediately (see vault_api::ANIM_FRAME_MS + set_anim_fps).
+    fn animated_frame<'a>(frames: &'a [[u32; 512]], now_ms: u64) -> &'a [u32; 512] {
+        let frame_ms = crate::vault_api::ANIM_FRAME_MS
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .max(1) as u64;
+        let idx = ((now_ms / frame_ms) % frames.len() as u64) as usize;
+        &frames[idx]
     }
 
     pub fn reset_help_state(&mut self) { self.help_state = HelpState::BadgeRecap { seen_press: false }; }
@@ -783,20 +796,63 @@ impl VaultUi {
         match mode_at_entry {
             VaultMode::Idle | VaultMode::ConfirmGene | VaultMode::IdleDevMode => {
                 let now = self.tt.elapsed_ms();
-                let defcon = self.defcon_bitmap.as_ref().unwrap_or(&bitmaps::dc_logo::BITMAP);
-                if let Some(bitmap) = self.user_bitmap.as_ref() {
-                    let edge = (now / 3000) % 2 == 0;
-                    if self.edge != edge || mode_at_entry != self.last_mode {
-                        if self.phase {
-                            self.gfx.bitmap_diffusion(bitmap, None, None).ok();
-                        } else {
-                            self.gfx.bitmap_diffusion(defcon, None, None).ok();
+                let has_user = !self.user_frames.is_empty();
+                let has_defcon = !self.defcon_frames.is_empty();
+
+                // Decide which slot's frames to show. Rules:
+                //  - Both slots populated → alternate every 3s (existing dance)
+                //  - Only user → show user
+                //  - Only defcon → show defcon
+                //  - Neither → fall back to the compiled dc_logo
+                // Within a chosen slot: 1 frame = static, >1 = animated
+                match (has_user, has_defcon) {
+                    (true, true) => {
+                        let edge = (now / 3000) % 2 == 0;
+                        let edge_changed = self.edge != edge || mode_at_entry != self.last_mode;
+                        if edge_changed {
+                            self.phase = !self.phase;
+                            self.edge = edge;
                         }
-                        self.phase = !self.phase;
+                        // `phase` = true → user slot ; false → defcon slot
+                        let slot: &Vec<[u32; 512]> =
+                            if self.phase { &self.user_frames } else { &self.defcon_frames };
+                        if slot.len() == 1 {
+                            // Static: only repaint on slot switch (use diffusion
+                            // for a nice transition between the two slots).
+                            if edge_changed {
+                                self.gfx.bitmap_diffusion(&slot[0], None, None).ok();
+                            }
+                        } else {
+                            // Multi-frame: repaint the current frame every tick.
+                            let frame = Self::animated_frame(slot, now);
+                            self.gfx.bitmap(frame, None, None).ok();
+                        }
                     }
-                    self.edge = edge;
-                } else {
-                    self.gfx.bitmap(defcon, None, None).ok();
+                    (true, false) => {
+                        if self.user_frames.len() == 1 {
+                            if mode_at_entry != self.last_mode {
+                                self.gfx.bitmap(&self.user_frames[0], None, None).ok();
+                            }
+                        } else {
+                            let frame = Self::animated_frame(&self.user_frames, now);
+                            self.gfx.bitmap(frame, None, None).ok();
+                        }
+                    }
+                    (false, true) => {
+                        if self.defcon_frames.len() == 1 {
+                            if mode_at_entry != self.last_mode {
+                                self.gfx.bitmap(&self.defcon_frames[0], None, None).ok();
+                            }
+                        } else {
+                            let frame = Self::animated_frame(&self.defcon_frames, now);
+                            self.gfx.bitmap(frame, None, None).ok();
+                        }
+                    }
+                    (false, false) => {
+                        if mode_at_entry != self.last_mode {
+                            self.gfx.bitmap(&bitmaps::dc_logo::BITMAP, None, None).ok();
+                        }
+                    }
                 }
 
                 // flag a badge mismatch, mostly for diagnostics at the factory & at the show

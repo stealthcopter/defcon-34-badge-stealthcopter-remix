@@ -86,6 +86,8 @@ mod bio;
 use bio::*;
 mod led;
 use led::*;
+mod fps;
+use fps::*;
 
 pub struct CmdEnv {
     common_env: CommonEnv,
@@ -96,6 +98,7 @@ pub struct CmdEnv {
     test: Test,
     bio: BioLoader,
     led: Led,
+    fps: Fps,
 }
 impl CmdEnv {
     pub fn new(xns: &xous_names::XousNames) -> CmdEnv {
@@ -117,6 +120,7 @@ impl CmdEnv {
             test: Test::new(),
             bio: BioLoader::new(),
             led: Led::new(),
+            fps: Fps::new(),
         }
     }
 
@@ -139,6 +143,7 @@ impl CmdEnv {
             &mut self.imagedc,
             &mut self.bio,
             &mut self.led,
+            &mut self.fps,
         ];
 
         if let Some(cmdline) = maybe_cmdline {

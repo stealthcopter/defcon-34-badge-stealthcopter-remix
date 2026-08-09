@@ -24,7 +24,7 @@ mod tests;
 mod vendor_commands;
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -92,6 +92,41 @@ impl VaultMode {
             VaultMode::Tour => false,
         }
     }
+}
+
+/// Load an image slot from PDDB as a `Vec` of one or more 128x128 frames.
+/// Each frame is 2048 bytes packed as `[u32; 512]`. Multi-frame images are
+/// stored as `N * 2048` contiguous bytes; the frame count is inferred from
+/// the stored size. Returns an empty vec if the key is missing, empty, or
+/// has a size that isn't a whole multiple of 2048.
+fn load_image_frames(pddb: &Pddb, key: &str) -> Vec<[u32; 512]> {
+    let mut k = match pddb.get(DC34_DICT, key, None, true, true, Some(2048), None::<fn()>) {
+        Ok(k) => k,
+        Err(_) => return Vec::new(),
+    };
+    // `read_to_end` drains the entire key. A single `.read()` is allowed by the
+    // Read contract to return fewer bytes than requested (the pddb backend
+    // often returns one 2048-byte page per call), which would silently truncate
+    // multi-frame images to just their first frame.
+    let mut buf: Vec<u8> = Vec::new();
+    if k.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    let n = buf.len();
+    if n == 0 || n % 2048 != 0 {
+        return Vec::new();
+    }
+    let count = n / 2048;
+    let mut frames = Vec::with_capacity(count);
+    for i in 0..count {
+        let frame_bytes = &buf[i * 2048..(i + 1) * 2048];
+        if let Ok(words) = bytemuck::try_cast_slice::<u8, u32>(frame_bytes) {
+            if let Ok(arr) = <[u32; 512]>::try_from(words) {
+                frames.push(arr);
+            }
+        }
+    }
+    frames
 }
 
 fn main() -> ! {
@@ -207,26 +242,8 @@ fn main() -> ! {
 
     log::info!("initial mode: {:?}", *mode.lock().unwrap());
 
-    let mut image_buf = [0u8; 2048];
-    let mut key = pddb
-        .get(DC34_DICT, DC34_IMAGE, None, true, true, Some(2048), None::<fn()>)
-        .expect("couldn't get PDDB key");
-    let image_len = key.read(&mut image_buf).expect("couldn't read key");
-    if image_len == 2048 {
-        let bitmap: Result<&[u32], _> = bytemuck::try_cast_slice(&image_buf);
-        vault_ui.user_bitmap = Some(bitmap.unwrap().try_into().unwrap());
-    }
-
-    // Phase 2: load uploadable defcon-logo replacement, if present
-    let mut defcon_buf = [0u8; 2048];
-    let mut defcon_key = pddb
-        .get(DC34_DICT, DC34_IMAGE_DEFCON, None, true, true, Some(2048), None::<fn()>)
-        .expect("couldn't get PDDB defcon key");
-    let defcon_len = defcon_key.read(&mut defcon_buf).expect("couldn't read defcon key");
-    if defcon_len == 2048 {
-        let bitmap: Result<&[u32], _> = bytemuck::try_cast_slice(&defcon_buf);
-        vault_ui.defcon_bitmap = Some(bitmap.unwrap().try_into().unwrap());
-    }
+    vault_ui.user_frames = load_image_frames(&pddb, DC34_IMAGE);
+    vault_ui.defcon_frames = load_image_frames(&pddb, DC34_IMAGE_DEFCON);
 
     // reload the database
     xous::send_message(
@@ -1009,30 +1026,16 @@ fn main() -> ! {
             }
             Some(VaultOp::ImageLoad) => xous::msg_scalar_unpack!(msg, load, _, _, _, {
                 if load == 0 {
-                    vault_ui.user_bitmap.take();
+                    vault_ui.user_frames.clear();
                 } else {
-                    let mut key = pddb
-                        .get(DC34_DICT, DC34_IMAGE, None, true, true, Some(2048), None::<fn()>)
-                        .expect("couldn't get PDDB key");
-                    let image_len = key.read(&mut image_buf).expect("couldn't read key");
-                    if image_len == 2048 {
-                        let bitmap: Result<&[u32], _> = bytemuck::try_cast_slice(&image_buf);
-                        vault_ui.user_bitmap = Some(bitmap.unwrap().try_into().unwrap());
-                    }
+                    vault_ui.user_frames = load_image_frames(&pddb, DC34_IMAGE);
                 }
             }),
             Some(VaultOp::ImageDefconLoad) => xous::msg_scalar_unpack!(msg, load, _, _, _, {
                 if load == 0 {
-                    vault_ui.defcon_bitmap.take();
+                    vault_ui.defcon_frames.clear();
                 } else {
-                    let mut key = pddb
-                        .get(DC34_DICT, DC34_IMAGE_DEFCON, None, true, true, Some(2048), None::<fn()>)
-                        .expect("couldn't get PDDB defcon key");
-                    let image_len = key.read(&mut defcon_buf).expect("couldn't read defcon key");
-                    if image_len == 2048 {
-                        let bitmap: Result<&[u32], _> = bytemuck::try_cast_slice(&defcon_buf);
-                        vault_ui.defcon_bitmap = Some(bitmap.unwrap().try_into().unwrap());
-                    }
+                    vault_ui.defcon_frames = load_image_frames(&pddb, DC34_IMAGE_DEFCON);
                 }
             }),
             Some(VaultOp::BioActive) => xous::msg_scalar_unpack!(msg, active, _, _, _, {
@@ -1060,6 +1063,10 @@ fn main() -> ! {
                     .ok();
                 vault_ui.redraw();
             }
+            Some(VaultOp::SetAnimFps) => xous::msg_scalar_unpack!(msg, fps, _, _, _, {
+                let clamped = global_config.lock().unwrap().set_anim_fps(fps as u8);
+                let _ = clamped;
+            }),
             Some(VaultOp::Jig) => {
                 *mode.lock().unwrap() = VaultMode::FactoryTest;
                 vault_ui.reset_factory_test();

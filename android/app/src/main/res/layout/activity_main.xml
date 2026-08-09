@@ -118,47 +118,175 @@
             android:textSize="10sp"
             android:layout_marginBottom="6dp" />
 
+        <!-- Frame queue: animated preview on the left (what the badge will
+             actually show, cycling at ~4 fps to match the on-badge pumper),
+             thumbnails of every queued frame scroll on the right.
+             The old-style single preview (id=preview, hidden by default) is
+             kept for compatibility with existing code that sets a preview
+             bitmap when a new image is decoded. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:baselineAligned="false">
 
             <ImageView
-                android:id="@+id/preview"
-                android:layout_width="72dp"
-                android:layout_height="72dp"
-                android:layout_marginEnd="8dp"
+                android:id="@+id/animPreview"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_marginEnd="6dp"
                 android:background="@color/white"
                 android:scaleType="fitCenter"
-                android:clickable="true"
-                android:focusable="true"
-                android:contentDescription="tap to pick an image" />
+                android:contentDescription="Preview of what the badge will display" />
 
-            <TextView
-                android:id="@+id/imageInfo"
+            <HorizontalScrollView
+                android:layout_width="0dp"
+                android:layout_height="80dp"
+                android:layout_weight="1"
+                android:background="#1AFFFFFF"
+                android:fillViewport="true">
+
+                <LinearLayout
+                    android:id="@+id/framesStrip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:orientation="horizontal"
+                    android:padding="4dp" />
+            </HorizontalScrollView>
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/preview"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone"
+            android:contentDescription="hidden preview compat" />
+
+        <TextView
+            android:id="@+id/imageInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Tap + Add frame to start queueing images"
+            android:textColor="@color/log_text"
+            android:fontFamily="monospace"
+            android:textSize="12sp" />
+
+        <!-- Add-frame + Upload sit next to each other; Upload stays disabled
+             until at least one frame is in the queue. Clear-queue and Wipe-badge
+             are on the second row so they aren't the most prominent action. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp"
+            android:baselineAligned="false">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAddFrame"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="4dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:minWidth="0dp"
+                android:text="+ Frame"
+                android:textStyle="bold"
+                android:contentDescription="Pick an image and add it to the frame queue" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAddZip"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:minWidth="0dp"
+                android:text="+ Zip"
+                android:contentDescription="Pick a .zip of images; each image becomes a frame in alphabetical order" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnUpload"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:gravity="center_vertical"
-                android:text="Tap the box to pick an image"
+                android:enabled="false"
+                android:text="Upload to badge"
+                android:textStyle="bold"
+                app:icon="@drawable/ic_upload"
+                app:iconGravity="textStart" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp"
+            android:baselineAligned="false">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnClearQueue"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Clear queue"
+                android:enabled="false"
+                android:contentDescription="Empty the local frame queue (badge unchanged)" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnClearBadge"
+                style="?attr/borderlessButtonStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Wipe badge slot"
+                android:contentDescription="Send a clear command to the badge for the selected slot" />
+        </LinearLayout>
+
+        <!-- Animation FPS: 1..30, default 10. Updates the badge's pumper cadence
+             and the local preview ticker so the app matches what the device does. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="4dp"
+            android:baselineAligned="false">
+
+            <TextView
+                android:id="@+id/fpsLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="FPS: 10"
+                android:minWidth="72dp"
                 android:textColor="@color/log_text"
                 android:fontFamily="monospace"
                 android:textSize="12sp" />
-        </LinearLayout>
 
-        <!-- Prominent upload button: greyed until an image is chosen, then it
-             lights up so the user knows to press it. -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnUpload"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:enabled="false"
-            android:text="Upload to badge"
-            android:textStyle="bold"
-            app:icon="@drawable/ic_upload"
-            app:iconGravity="textStart" />
+            <SeekBar
+                android:id="@+id/fpsBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:min="1"
+                android:max="30"
+                android:progress="10" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSetFps"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:minWidth="0dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="Set FPS"
+                android:contentDescription="Push the selected FPS to the badge" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- ===== LEDs panel ===== -->

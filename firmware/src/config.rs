@@ -208,6 +208,21 @@ impl GlobalConfig {
         let display_always_on = if always_on_len == 1 { always_on_buf[0] != 0 } else { true };
         log::info!("display_always_on: {}", display_always_on);
 
+        // Load animation FPS preference (default 10).
+        let mut fps_buf = [10u8; 1];
+        let fps_len = read_pddb(&pddb, DC34_ANIM_FPS, &mut fps_buf);
+        let anim_fps: u8 = if fps_len == 1 && fps_buf[0] >= 1 && fps_buf[0] <= 30 {
+            fps_buf[0]
+        } else {
+            10
+        };
+        crate::vault_api::ANIM_FRAME_MS.store(
+            crate::vault_api::fps_to_frame_ms(anim_fps),
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        log::info!("anim_fps: {} ({} ms/frame)", anim_fps,
+            crate::vault_api::ANIM_FRAME_MS.load(core::sync::atomic::Ordering::SeqCst));
+
         (
             GlobalConfig {
                 is_developer,
@@ -233,6 +248,25 @@ impl GlobalConfig {
     }
 
     pub fn display_always_on(&self) -> bool { self.display_always_on }
+
+    /// Update the animation FPS: clamps to 1..=30, updates the shared atomic,
+    /// and persists to PDDB so it survives reboots. Returns the clamped value.
+    pub fn set_anim_fps(&self, fps: u8) -> u8 {
+        let clamped = fps.max(1).min(30);
+        crate::vault_api::ANIM_FRAME_MS.store(
+            crate::vault_api::fps_to_frame_ms(clamped),
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        let pddb = pddb::Pddb::new();
+        if let Ok(mut key) =
+            pddb.get(DC34_DICT, DC34_ANIM_FPS, None, true, true, Some(1), None::<fn()>)
+        {
+            let _ = key.write(&[clamped]);
+        }
+        log::info!("anim_fps set to {} ({} ms/frame)", clamped,
+            crate::vault_api::ANIM_FRAME_MS.load(core::sync::atomic::Ordering::SeqCst));
+        clamped
+    }
 
     /// Flip the always-on flag, persist to PDDB, and return the new state.
     /// Caller should invoke update_power_state() afterward so the change applies

@@ -264,9 +264,40 @@ class MainActivity : AppCompatActivity() {
 
         // One button toggles connect / disconnect (never need both at once).
         binding.btnConnect.setOnClickListener { onConnectToggle() }
-        // Tap the preview box to pick an image; the upload button sends it.
-        binding.preview.setOnClickListener { pickImage.launch("image/*") }
+        // "+ Frame" launches the image picker; the dialog's "Add to queue"
+        // appends the converted mono buffer to the current slot's local queue.
+        binding.btnAddFrame.setOnClickListener { pickImage.launch("image/*") }
+        // "+ Zip" launches a file picker for .zip archives; every image entry
+        // is decoded, converted with the current dither/threshold settings,
+        // and appended to the queue in alphabetical filename order.
+        binding.btnAddZip.setOnClickListener { pickZip.launch("application/zip") }
         binding.btnUpload.setOnClickListener { onUploadClicked() }
+        // Clear queue = discard the local frame list (badge unchanged).
+        binding.btnClearQueue.setOnClickListener { clearQueueForCurrentSlot() }
+        // Wipe badge slot = send `<cmd> clear` to the badge. Overflow menu still
+        // works too.
+        binding.btnClearBadge.setOnClickListener { onClearBadgeClicked() }
+
+        // FPS: SeekBar updates the label + local preview cadence live; Set FPS
+        // pushes the value to the badge via the `fps <N>` REPL command.
+        binding.fpsBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, value: Int, fromUser: Boolean) {
+                val fps = value.coerceAtLeast(1)
+                binding.fpsLabel.text = "FPS: $fps"
+                animPreviewMs = ((1000L + fps / 2) / fps).coerceAtLeast(30L)
+                // Restart the ticker so the change takes effect on the next tick
+                // instead of after the current sleep interval.
+                val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+                val list = queuedFrames[slot]
+                if (list != null && list.size > 1) {
+                    ui.removeCallbacks(animPreviewTick)
+                    ui.postDelayed(animPreviewTick, animPreviewMs)
+                }
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+        binding.btnSetFps.setOnClickListener { onSetFpsClicked() }
 
         // Image slot selector: user "image" vs DEF CON-logo "imagedc" (Remix-only).
         binding.slotChoice.setOnCheckedChangeListener { _, checkedId ->
@@ -280,6 +311,8 @@ class MainActivity : AppCompatActivity() {
                 "DEF CON-logo slot: replaces the built-in logo (falls back to it when empty). Persists across reboots."
             else
                 "User image alternates with the DEF CON logo every 3 s on the idle screen."
+            // Each slot has its own local queue; redraw the strip for the new one.
+            refreshFramesStrip()
         }
 
         // Console passthrough (power users) — works on any firmware.
@@ -397,6 +430,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        ui.removeCallbacks(animPreviewTick)
         try {
             unregisterReceiver(usbReceiver)
         } catch (_: Exception) {
@@ -408,10 +442,49 @@ class MainActivity : AppCompatActivity() {
 
     // --- image picking -------------------------------------------------------
 
+    /** One queued frame: the mono buffer that gets shipped to the badge and a
+     *  small preview bitmap for the on-screen thumbnail strip. */
+    private data class QueueEntry(val mono: BooleanArray, val preview: Bitmap)
+
+    /** Ticks the animated preview at ~4 fps (matches the badge's pumper rate,
+     *  see firmware/src/totp.rs::pumper). Cancelled + rescheduled on every
+     *  queue change so it always reflects what's currently queued. */
+    private val animPreviewTick = object : Runnable {
+        override fun run() {
+            val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+            val list = queuedFrames[slot] ?: return
+            if (list.isEmpty()) return
+            animPreviewFrame = (animPreviewFrame + 1) % list.size
+            binding.animPreview.setImageBitmap(list[animPreviewFrame].preview)
+            ui.postDelayed(this, animPreviewMs)
+        }
+    }
+    private var animPreviewFrame: Int = 0
+    /** Preview cadence in ms/frame — kept in sync with the FPS SeekBar. Defaults
+     *  to 10 fps (100 ms) to match the firmware's default `anim_fps`. */
+    private var animPreviewMs: Long = 100L
+
+    /**
+     * The local frame queue per slot. `Add frame` appends to `queuedFrames[slot]`,
+     * `Upload to badge` flashes the whole list as one multi-frame image, and
+     * `Clear queue` empties it. Independent per slot so switching slots doesn't
+     * discard what you were building.
+     */
+    private val queuedFrames: MutableMap<String, MutableList<QueueEntry>> = mutableMapOf(
+        CMD_IMAGE_USER to mutableListOf(),
+        CMD_IMAGE_DEFCON to mutableListOf(),
+    )
+
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
             if (uri == null) {
                 log("Image pick cancelled")
+                return@registerForActivityResult
+            }
+            val currentSlot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+            if ((queuedFrames[currentSlot]?.size ?: 0) >= ImagePacker.MAX_FRAMES) {
+                log("Queue full (${ImagePacker.MAX_FRAMES} frames) — Upload or Clear first")
+                toast("Frame cap reached (${ImagePacker.MAX_FRAMES})")
                 return@registerForActivityResult
             }
             log("Picked image: $uri")
@@ -430,6 +503,109 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+    /**
+     * Zip-of-images picker. All entries whose filename ends in a known image
+     * extension are decoded and added to the current slot's frame queue, in
+     * ALPHABETICAL order by entry name (so `frame_00.png … frame_11.png`
+     * queue up in the obvious order). Conversion uses the currently-selected
+     * dither/threshold/invert options — no per-image dialog for zips because
+     * that would be tedious for a 20-frame animation.
+     */
+    private val pickZip =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            if (uri == null) {
+                log("Zip pick cancelled")
+                return@registerForActivityResult
+            }
+            log("Picked zip: $uri")
+            worker.execute { addFramesFromZip(uri) }
+        }
+
+    private fun addFramesFromZip(uri: Uri) {
+        val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+        val list = queuedFrames.getOrPut(slot) { mutableListOf() }
+        val roomLeft = ImagePacker.MAX_FRAMES - list.size
+        if (roomLeft <= 0) {
+            log("Queue full (${ImagePacker.MAX_FRAMES} frames) — Upload or Clear first")
+            ui.post { toast("Frame cap reached (${ImagePacker.MAX_FRAMES})") }
+            return
+        }
+
+        // Read every image entry into memory first, then sort alphabetically.
+        // ZipInputStream visits entries in file order, which for most zip tools
+        // matches the on-disk order — we don't rely on that.
+        data class NamedBytes(val name: String, val bytes: ByteArray)
+        val entries = mutableListOf<NamedBytes>()
+        try {
+            contentResolver.openInputStream(uri).use { rawIn ->
+                if (rawIn == null) {
+                    log("ERROR: could not open zip")
+                    return
+                }
+                java.util.zip.ZipInputStream(rawIn).use { zip ->
+                    while (true) {
+                        val entry = zip.nextEntry ?: break
+                        if (entry.isDirectory) { zip.closeEntry(); continue }
+                        val lower = entry.name.lowercase()
+                        val isImg = lower.endsWith(".png") || lower.endsWith(".jpg") ||
+                            lower.endsWith(".jpeg") || lower.endsWith(".bmp") ||
+                            lower.endsWith(".webp") || lower.endsWith(".gif")
+                        if (!isImg) { zip.closeEntry(); continue }
+                        // Ignore macOS resource-fork noise like __MACOSX/._foo.png
+                        if (entry.name.contains("__MACOSX") ||
+                            java.io.File(entry.name).name.startsWith("._")) {
+                            zip.closeEntry(); continue
+                        }
+                        val buf = zip.readBytes()
+                        entries.add(NamedBytes(entry.name, buf))
+                        zip.closeEntry()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log("ERROR reading zip: ${e.message}")
+            return
+        }
+
+        if (entries.isEmpty()) {
+            log("Zip contained no supported images (png/jpg/gif/bmp/webp)")
+            ui.post { toast("No images found in zip") }
+            return
+        }
+
+        entries.sortBy { it.name }
+        val taken = entries.take(roomLeft)
+        if (entries.size > roomLeft) {
+            log("Zip has ${entries.size} images, ${roomLeft} slot(s) free — queuing first $roomLeft")
+        } else {
+            log("Zip has ${entries.size} image(s) — queuing all in alphabetical order")
+        }
+
+        val opts = currentOptions()
+        var addedThisPass = 0
+        for (e in taken) {
+            try {
+                val bmp = BitmapFactory.decodeByteArray(e.bytes, 0, e.bytes.size)
+                if (bmp == null) {
+                    log("   skip ${e.name} — could not decode")
+                    continue
+                }
+                val mono = ImagePacker.toMonochrome(bmp, opts)
+                val preview = ImagePacker.previewBitmap(mono)
+                list.add(QueueEntry(mono, preview))
+                addedThisPass++
+                log("   + ${e.name}")
+            } catch (ex: Exception) {
+                log("   skip ${e.name} — ${ex.message}")
+            }
+        }
+        log("Queued $addedThisPass frame(s) from zip (queue depth now ${list.size})")
+        ui.post {
+            refreshFramesStrip()
+            markImageReady()
+        }
+    }
 
     /** Conversion options built from the stored dither/threshold/invert settings. */
     private fun currentOptions(): ImagePacker.ConvertOptions = ImagePacker.ConvertOptions(
@@ -487,8 +663,94 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Adjust image")
             .setView(view)
-            .setPositiveButton("Use image", null)
-            .setNeutralButton("Upload now") { _, _ -> onUploadClicked() }
+            .setPositiveButton("Add to queue") { _, _ -> addCurrentFrameToQueue() }
+            .setNeutralButton("Upload now") { _, _ ->
+                addCurrentFrameToQueue()
+                onUploadClicked()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Append the most recently-refreshed `monochrome` buffer to the queue for
+     *  the currently-selected slot, and repaint the thumbnail strip. */
+    private fun addCurrentFrameToQueue() {
+        val mono = monochrome ?: run {
+            log("No image ready to queue")
+            return
+        }
+        val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+        val list = queuedFrames.getOrPut(slot) { mutableListOf() }
+        if (list.size >= ImagePacker.MAX_FRAMES) {
+            log("Queue full (${ImagePacker.MAX_FRAMES}) — Upload or Clear first")
+            toast("Frame cap reached (${ImagePacker.MAX_FRAMES})")
+            return
+        }
+        list.add(QueueEntry(mono.copyOf(), ImagePacker.previewBitmap(mono)))
+        log("Queued frame ${list.size} for '$slot' (queue depth ${list.size})")
+        refreshFramesStrip()
+        markImageReady()   // enable Upload
+    }
+
+    /** Rebuild the horizontal thumbnail strip from the currently-selected slot's
+     *  queue. Tap a thumbnail to remove it. Call on the UI thread. */
+    private fun refreshFramesStrip() {
+        val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+        val list = queuedFrames[slot] ?: mutableListOf()
+        val strip = binding.framesStrip
+        strip.removeAllViews()
+        val ctx = strip.context
+        val sizePx = (72 * resources.displayMetrics.density).toInt()
+        val marginPx = (4 * resources.displayMetrics.density).toInt()
+        for ((i, entry) in list.withIndex()) {
+            val iv = ImageView(ctx).apply {
+                layoutParams = android.widget.LinearLayout.LayoutParams(sizePx, sizePx).also {
+                    it.marginEnd = marginPx
+                }
+                setBackgroundColor(0xFFFFFFFF.toInt())
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setImageBitmap(entry.preview)
+                contentDescription = "Frame ${i + 1} — tap to remove"
+                setOnClickListener { promptRemoveFrame(i) }
+            }
+            strip.addView(iv)
+        }
+        binding.imageInfo.text = when (list.size) {
+            0 -> "Queue empty — tap + Frame or + Zip to start"
+            1 -> "1 frame queued for ${slot.uppercase()} — Upload for a static image, or add more to animate"
+            else -> "${list.size} frames queued for ${slot.uppercase()} — Upload to flash them (preview cycles at ~4 fps)"
+        }
+        // Upload enabled only when there's at least one frame queued.
+        binding.btnUpload.isEnabled = list.isNotEmpty()
+        binding.btnClearQueue.isEnabled = list.isNotEmpty()
+        // If the last frame just got queued, cap the button so extras don't try.
+        binding.btnAddFrame.isEnabled = list.size < ImagePacker.MAX_FRAMES
+
+        // Refresh the animated preview:
+        //  - Empty queue: blank the preview.
+        //  - 1 frame:     show it static; no ticker needed.
+        //  - N frames:    show frame 0 now, start the ticker for the rest.
+        ui.removeCallbacks(animPreviewTick)
+        animPreviewFrame = 0
+        when {
+            list.isEmpty() -> binding.animPreview.setImageDrawable(null)
+            list.size == 1 -> binding.animPreview.setImageBitmap(list[0].preview)
+            else -> {
+                binding.animPreview.setImageBitmap(list[0].preview)
+                ui.postDelayed(animPreviewTick, animPreviewMs)
+            }
+        }
+    }
+
+    private fun promptRemoveFrame(index: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Remove frame ${index + 1}?")
+            .setMessage("This removes the frame from the local queue. The badge is not affected until you Upload.")
+            .setPositiveButton("Remove") { _, _ ->
+                val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+                queuedFrames[slot]?.removeAt(index)
+                refreshFramesStrip()
+            }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -631,95 +893,152 @@ class MainActivity : AppCompatActivity() {
             toast("Connect the badge first")
             return
         }
-        val mono = monochrome
-        if (mono == null) {
-            log("No image selected — tap the preview box to pick one")
-            return
-        }
         if (uploadDefconSlot && !advancedEnabled) {
             showRemixRequiredDialog("The second (DEF CON logo) image slot")
+            return
+        }
+        val cmd = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+        val queue = queuedFrames[cmd] ?: mutableListOf()
+        if (queue.isEmpty()) {
+            log("Frame queue is empty — tap + Add frame first")
+            toast("Add at least one frame first")
             return
         }
         if (!busy.compareAndSet(false, true)) {
             log("Busy — another transfer is in progress")
             return
         }
-        val cmd = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+        val framesForUpload: List<BooleanArray> = queue.map { it.mono }
+
         worker.execute {
             try {
-                uploadImage(s, mono, cmd)
+                val ok = uploadImage(s, framesForUpload, cmd)
+                if (ok) {
+                    log("Slot '$cmd' now shows ${framesForUpload.size} frame(s) on the badge")
+                    // Keep the local queue intact so the user can re-upload,
+                    // add another frame + upload, or Clear queue explicitly.
+                }
             } finally {
                 busy.set(false)
             }
         }
     }
 
-    private fun uploadImage(s: CdcAcmSerial, mono: BooleanArray, cmd: String) {
-        val slotName = if (cmd == CMD_IMAGE_DEFCON) "DEF CON-logo slot" else "user image slot"
-        log("── Building 2048-byte payload for $slotName ('$cmd') ──")
-        val bitmap = ImagePacker.imageToBytes(mono)
-        val chunks = ImagePacker.sliceChunks(bitmap)
-        log("Payload built: ${bitmap.size} bytes -> ${chunks.size} chunks of ${ImagePacker.CHUNK_DATA_SIZE} B")
+    /** Wipe the local queue for the currently-selected slot. Badge unchanged. */
+    private fun clearQueueForCurrentSlot() {
+        val slot = if (uploadDefconSlot) CMD_IMAGE_DEFCON else CMD_IMAGE_USER
+        queuedFrames[slot]?.clear()
+        refreshFramesStrip()
+    }
 
-        // Flush any async console backlog (boot/pddb log flood) so the first
-        // response we read belongs to our first chunk, not stale noise.
+    private enum class ChunkResult { Continue, Success, Failed }
+
+    /** Returns true iff the badge acknowledged the full transfer with SUCCESS. */
+    private fun uploadImage(s: CdcAcmSerial, frames: List<BooleanArray>, cmd: String): Boolean {
+        val slotName = if (cmd == CMD_IMAGE_DEFCON) "DEF CON-logo slot" else "user image slot"
+        val n = frames.size
+        log("── Building ${n * 2048}-byte payload ($n frame${if (n == 1) "" else "s"}) for $slotName ('$cmd') ──")
+
         val drained = s.drainInput()
         if (drained > 0) log("Drained $drained stale console byte(s) before upload")
-        log("Sending ${chunks.size} '$cmd' chunks @ ${CdcAcmSerial.BAUD_RATE} baud")
 
-        for (idx in chunks.indices) {
-            val wire = ImagePacker.makeChunk(idx, chunks[idx])
-            val line = ImagePacker.encodeLine(wire, cmd)
-            log("→ chunk ${idx + 1}/${chunks.size} wire[70]=${hexPreview(wire)}")
-
-            var advanced = false
-            var attempt = 0
-            while (attempt <= MAX_RETRIES) {
-                val written = s.write(line)
-                log("   TX ${written}B: ${String(line, Charsets.US_ASCII).trimEnd()}")
-                val resp = s.awaitResponse(UPLOAD_TOKENS, SERIAL_TIMEOUT_MS) { skipped ->
-                    log("   · skip async: $skipped")
-                }
-                log("   RX: ${resp ?: "<timeout / no response>"}")
-
-                when (resp) {
-                    "SUCCESS" -> {
-                        log("✓ Chunk ${idx + 1}/${chunks.size} -> SUCCESS — transfer complete")
-                        setStatus("upload complete")
-                        return
-                    }
-                    "OK" -> {
-                        log("   OK  chunk ${idx + 1}/${chunks.size}")
-                        advanced = true
-                    }
-                    "ERR" -> {
-                        if (attempt < MAX_RETRIES) {
-                            log("   WARN ERR — retry ${attempt + 1}/$MAX_RETRIES")
-                            sleep(RETRY_DELAY_MS)
-                        } else {
-                            log("✗ Chunk ${idx + 1} failed after $MAX_RETRIES retries — aborting")
-                            setStatus("upload failed (ERR)")
-                            return
-                        }
-                    }
-                    else -> {
-                        if (attempt < MAX_RETRIES) {
-                            log("   WARN unexpected/timeout '${resp}' — retry ${attempt + 1}/$MAX_RETRIES")
-                            sleep(RETRY_DELAY_MS)
-                        } else {
-                            log("✗ Chunk ${idx + 1} — no valid response after retries — aborting")
-                            setStatus("upload failed (no response)")
-                            return
-                        }
-                    }
-                }
-                if (advanced) break
-                attempt++
+        // For a multi-frame upload we tell the badge how many frames to expect
+        // BEFORE sending any chunks (`<cmd> frames N\n`). Single-frame uploads
+        // skip this handshake for backward compatibility with the pre-multi
+        // firmware.
+        if (n > 1) {
+            val framesLine = "$cmd frames $n\n".toByteArray(Charsets.US_ASCII)
+            s.write(framesLine)
+            log("→ $cmd frames $n")
+            val resp = s.awaitResponse(listOf("OK", "ERR"), SERIAL_TIMEOUT_MS) { skipped ->
+                log("   · skip async: $skipped")
             }
-            sleep(LINE_DELAY_MS)
+            log("   RX: ${resp ?: "<timeout>"}")
+            if (resp == null || resp == "ERR") {
+                log("✗ '$cmd frames $n' rejected — is the badge running Remix firmware with multi-frame support?")
+                setStatus("upload failed (frames rejected)")
+                return false
+            }
+        }
+
+        val allChunks: List<List<ByteArray>> = frames.map { mono ->
+            ImagePacker.sliceChunks(ImagePacker.imageToBytes(mono))
+        }
+        val totalChunks = n * ImagePacker.NUM_CHUNKS
+        log("Payload built: $totalChunks chunks of ${ImagePacker.CHUNK_DATA_SIZE} B")
+        log("Sending $totalChunks '$cmd' chunks @ ${CdcAcmSerial.BAUD_RATE} baud")
+
+        var sent = 0
+        for (frameIdx in 0 until n) {
+            val chunks = allChunks[frameIdx]
+            for (chunkIdx in chunks.indices) {
+                val wire = ImagePacker.makeChunk(chunkIdx, chunks[chunkIdx], frameIdx)
+                val line = ImagePacker.encodeLine(wire, cmd)
+                sent++
+                when (sendOneChunk(s, line, sent, totalChunks, cmd, frameIdx, chunkIdx)) {
+                    ChunkResult.Success -> return true
+                    ChunkResult.Failed -> return false
+                    ChunkResult.Continue -> {}
+                }
+                sleep(LINE_DELAY_MS)
+            }
         }
         log("WARN: all chunks sent but SUCCESS was never received")
         setStatus("upload finished (no final SUCCESS)")
+        return false
+    }
+
+    /** Send one prepared chunk line with retries. Returns true to keep going,
+     *  Success ends the whole upload (SUCCESS ACK), Continue keeps going,
+     *  Failed aborts.  */
+    private fun sendOneChunk(
+        s: CdcAcmSerial,
+        line: ByteArray,
+        sentIdx: Int,
+        total: Int,
+        cmd: String,
+        frameIdx: Int,
+        chunkIdx: Int,
+    ): ChunkResult {
+        var attempt = 0
+        while (attempt <= MAX_RETRIES) {
+            val written = s.write(line)
+            log("→ frame $frameIdx chunk ${chunkIdx + 1}/${ImagePacker.NUM_CHUNKS} (overall $sentIdx/$total) TX ${written}B")
+            val resp = s.awaitResponse(UPLOAD_TOKENS, SERIAL_TIMEOUT_MS) { skipped ->
+                log("   · skip async: $skipped")
+            }
+            log("   RX: ${resp ?: "<timeout>"}")
+            when (resp) {
+                "SUCCESS" -> {
+                    log("✓ SUCCESS — full transfer complete ($total chunks)")
+                    setStatus("upload complete")
+                    return ChunkResult.Success
+                }
+                "OK" -> return ChunkResult.Continue
+                "ERR" -> {
+                    if (attempt < MAX_RETRIES) {
+                        log("   WARN ERR — retry ${attempt + 1}/$MAX_RETRIES")
+                        sleep(RETRY_DELAY_MS)
+                    } else {
+                        log("✗ Chunk $sentIdx failed after $MAX_RETRIES retries — aborting")
+                        setStatus("upload failed (ERR)")
+                        return ChunkResult.Failed
+                    }
+                }
+                else -> {
+                    if (attempt < MAX_RETRIES) {
+                        log("   WARN unexpected/timeout '$resp' — retry ${attempt + 1}/$MAX_RETRIES")
+                        sleep(RETRY_DELAY_MS)
+                    } else {
+                        log("✗ Chunk $sentIdx — no valid response after retries — aborting")
+                        setStatus("upload failed (no response)")
+                        return ChunkResult.Failed
+                    }
+                }
+            }
+            attempt++
+        }
+        return ChunkResult.Failed
     }
 
     private fun onClearBadgeClicked() {
@@ -773,6 +1092,10 @@ class MainActivity : AppCompatActivity() {
                         if (resp == "CLEAR") {
                             log("✓ '$cmd' slot cleared")
                             setStatus("cleared: $cmd")
+                            // Also drop the local queue for this slot so the
+                            // strip on screen matches what the badge shows.
+                            queuedFrames[cmd]?.clear()
+                            ui.post { refreshFramesStrip() }
                             ok = true
                         } else if (attempt < MAX_RETRIES) {
                             log("   WARN clear not confirmed — retry ${attempt + 1}/$MAX_RETRIES")
@@ -1023,6 +1346,41 @@ class MainActivity : AppCompatActivity() {
      * async console noise first. Guarded by the shared [busy] flag. Callers reach
      * this only through [ledAction], which has already checked Remix support.
      */
+    /** Push the SeekBar's current FPS value to the badge via `fps <N>`. The
+     *  badge clamps 1..30 and persists to PDDB so the setting sticks across
+     *  reboots. Firmware-side default is 10 fps. */
+    private fun onSetFpsClicked() {
+        val s = serial
+        if (s == null || !s.isOpen) {
+            log("Not connected — press Connect first")
+            toast("Connect the badge first")
+            return
+        }
+        if (!busy.compareAndSet(false, true)) {
+            log("Busy — another operation is in progress")
+            return
+        }
+        val fps = binding.fpsBar.progress.coerceIn(1, 30)
+        worker.execute {
+            try {
+                s.drainInput()
+                val line = "fps $fps\n".toByteArray(Charsets.US_ASCII)
+                val w = s.write(line)
+                log("→ fps $fps  (TX ${w}B)")
+                val resp = s.awaitResponse(listOf("OK", "ERR"), SERIAL_TIMEOUT_MS) { skipped ->
+                    log("   · skip async: $skipped")
+                }
+                when (resp) {
+                    "OK" -> { log("✓ badge FPS set to $fps"); setStatus("fps: $fps") }
+                    "ERR" -> log("✗ badge rejected fps $fps")
+                    else -> log("   fps -> ${resp ?: "<no reply>"}")
+                }
+            } finally {
+                busy.set(false)
+            }
+        }
+    }
+
     private fun sendLedCommand(cmd: String) {
         val s = serial
         if (s == null || !s.isOpen) {
